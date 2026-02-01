@@ -4,6 +4,7 @@
 //! to access files on a user's primary machine through NATS messaging.
 
 const std = @import("std");
+const resource_daemon = @import("resource/daemon.zig");
 
 pub const version = "0.1.0";
 
@@ -43,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
     const cmd_args = if (args.len > 2) args[2..] else &[_][:0]const u8{};
 
     if (std.mem.eql(u8, cmd, "--mode")) {
-        try handleModeCommand(cmd_args);
+        try handleModeCommand(allocator, cmd_args);
     } else if (std.mem.eql(u8, cmd, "mcp-server")) {
         try handleMcpServer();
     } else if (std.mem.eql(u8, cmd, "grant")) {
@@ -78,7 +79,11 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn handleModeCommand(args: []const [:0]const u8) !void {
+/// Handles --mode command to start resource or agent daemon.
+fn handleModeCommand(
+    allocator: std.mem.Allocator,
+    args: []const [:0]const u8,
+) !void {
     if (args.len == 0) {
         std.debug.print(
             "Error: --mode requires argument (resource|agent)\n",
@@ -86,9 +91,34 @@ fn handleModeCommand(args: []const [:0]const u8) !void {
         );
         return;
     }
+
     const mode = args[0];
+    const remaining_args = if (args.len > 1) args[1..] else &[_][:0]const u8{};
+
     if (std.mem.eql(u8, mode, "resource")) {
-        std.debug.print("Resource daemon not yet implemented\n", .{});
+        var public_key_path: []const u8 = "/tmp/clawgate_test_public.key";
+        var nats_url: []const u8 = "nats://localhost:4222";
+
+        var i: usize = 0;
+        while (i < remaining_args.len) : (i += 1) {
+            const arg = remaining_args[i];
+            const has_next = i + 1 < remaining_args.len;
+            if (std.mem.eql(u8, arg, "--public-key") and has_next) {
+                i += 1;
+                public_key_path = remaining_args[i];
+            } else if (std.mem.eql(u8, arg, "--nats") and has_next) {
+                i += 1;
+                nats_url = remaining_args[i];
+            }
+        }
+
+        resource_daemon.run(allocator, .{
+            .nats_url = nats_url,
+            .public_key_path = public_key_path,
+        }) catch |err| {
+            std.debug.print("Resource daemon error: {}\n", .{err});
+            return;
+        };
     } else if (std.mem.eql(u8, mode, "agent")) {
         std.debug.print("Agent daemon not yet implemented\n", .{});
     } else {
@@ -96,54 +126,65 @@ fn handleModeCommand(args: []const [:0]const u8) !void {
     }
 }
 
+/// Starts MCP server for agent-side AI tool integration.
 fn handleMcpServer() !void {
     std.debug.print("MCP server not yet implemented\n", .{});
 }
 
+/// Grants a capability token for file access.
 fn handleGrant(args: []const [:0]const u8) !void {
     _ = args;
     std.debug.print("Grant command not yet implemented\n", .{});
 }
 
+/// Displays audit log of file access events.
 fn handleAudit(args: []const [:0]const u8) !void {
     _ = args;
     std.debug.print("Audit command not yet implemented\n", .{});
 }
 
+/// Reads and outputs file content.
 fn handleCat(args: []const [:0]const u8) !void {
     _ = args;
     std.debug.print("Cat command not yet implemented\n", .{});
 }
 
+/// Lists directory contents.
 fn handleLs(args: []const [:0]const u8) !void {
     _ = args;
     std.debug.print("Ls command not yet implemented\n", .{});
 }
 
+/// Writes content to a file.
 fn handleWrite(args: []const [:0]const u8) !void {
     _ = args;
     std.debug.print("Write command not yet implemented\n", .{});
 }
 
+/// Returns file or directory metadata.
 fn handleStat(args: []const [:0]const u8) !void {
     _ = args;
     std.debug.print("Stat command not yet implemented\n", .{});
 }
 
+/// Generates Ed25519 keypair for token signing.
 fn handleKeygen(args: []const [:0]const u8) !void {
     _ = args;
     std.debug.print("Keygen command not yet implemented\n", .{});
 }
 
+/// Manages stored capability tokens.
 fn handleToken(args: []const [:0]const u8) !void {
     _ = args;
     std.debug.print("Token command not yet implemented\n", .{});
 }
 
+/// Prints version information.
 fn printVersion() void {
     std.debug.print("ClawGate v{s}\n", .{version});
 }
 
+/// Prints CLI usage help.
 fn printUsage() void {
     const usage =
         \\ClawGate - Secure file access for isolated AI agents
@@ -196,4 +237,7 @@ test {
     _ = @import("capability/crypto.zig");
     _ = @import("capability/token.zig");
     _ = @import("protocol/json.zig");
+    _ = @import("resource/files.zig");
+    _ = @import("resource/handlers.zig");
+    _ = @import("resource/daemon.zig");
 }

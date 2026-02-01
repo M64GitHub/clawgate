@@ -82,9 +82,10 @@ pub fn loadSecretKey(io: Io, path: []const u8) !SecretKey {
     defer file.close(io);
 
     var key: SecretKey = undefined;
-    const result = file.readStreaming(io, &.{&key});
-    const bytes_read = result[0] catch return CryptoError.ReadError;
-    if (bytes_read != Ed25519.secret_length) {
+    const bytes_read = file.readPositionalAll(io, &key, 0) catch {
+        return CryptoError.ReadError;
+    };
+    if (bytes_read != Ed25519.SecretKey.encoded_length) {
         return CryptoError.InvalidKeyLength;
     }
     return key;
@@ -98,9 +99,10 @@ pub fn loadPublicKey(io: Io, path: []const u8) !PublicKey {
     defer file.close(io);
 
     var key: PublicKey = undefined;
-    const result = file.readStreaming(io, &.{&key});
-    const bytes_read = result[0] catch return CryptoError.ReadError;
-    if (bytes_read != Ed25519.public_length) {
+    const bytes_read = file.readPositionalAll(io, &key, 0) catch {
+        return CryptoError.ReadError;
+    };
+    if (bytes_read != Ed25519.PublicKey.encoded_length) {
         return CryptoError.InvalidKeyLength;
     }
     return key;
