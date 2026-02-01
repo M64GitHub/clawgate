@@ -247,22 +247,86 @@ fn executeStat(
 }
 
 /// Forbidden path patterns that must never be accessed regardless of token.
+/// These protect security-critical files from being read or written.
 const FORBIDDEN_PATTERNS = [_][]const u8{
+    // SSH keys and config
     "/.ssh/",
+    // GPG keys
     "/.gnupg/",
+    // ClawGate's own signing keys
     "/.clawgate/keys/",
+    // Cloud provider credentials
     "/.aws/",
     "/.config/gcloud/",
+    "/.azure/",
+    // Kubernetes credentials
     "/.kube/",
+    // Docker credentials
+    "/.docker/config.json",
+    // Network credentials
+    "/.netrc",
+    // NPM tokens
+    "/.npmrc",
+    // Git credentials
+    "/.git-credentials",
+    // Password managers
+    "/.password-store/",
+    "/.local/share/keyrings/",
+    // Browser data (credentials, cookies)
+    "/.mozilla/firefox/",
+    "/.config/google-chrome/",
+    "/.config/chromium/",
+    // VS Code secrets
+    "/.config/Code/",
+    // 1Password CLI
+    "/.config/op/",
+};
+
+/// Forbidden filename patterns (matched at end of path).
+/// Note: We avoid overly broad patterns like ".key" that could match
+/// legitimate files. Instead we target specific sensitive filenames.
+const FORBIDDEN_SUFFIXES = [_][]const u8{
+    // Environment files with secrets
+    ".env",
+    ".env.local",
+    ".env.production",
+    // Private key formats (specific patterns)
+    "/private.pem",
+    "/private.key",
+    "/id_rsa",
+    "/id_ed25519",
+    "/id_ecdsa",
+    ".p12",
+    ".pfx",
+    // Credential files
+    "credentials.json",
+    "service-account.json",
+    "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
 };
 
 /// Checks if a path matches any forbidden pattern.
 fn isForbiddenPath(path: []const u8) bool {
+    // Check directory patterns (substring match)
     for (FORBIDDEN_PATTERNS) |pattern| {
         if (std.mem.indexOf(u8, path, pattern) != null) {
             return true;
         }
     }
+
+    // Check filename suffixes
+    for (FORBIDDEN_SUFFIXES) |suffix| {
+        if (std.mem.endsWith(u8, path, suffix)) {
+            return true;
+        }
+    }
+
+    // Check for hidden .env files anywhere in path
+    if (std.mem.indexOf(u8, path, "/.env")) |_| {
+        return true;
+    }
+
     return false;
 }
 
@@ -481,4 +545,65 @@ test "handle file not found" {
     const has_err = std.mem.indexOf(u8, response, "FILE_NOT_FOUND");
     try std.testing.expect(has_ok != null);
     try std.testing.expect(has_err != null);
+}
+
+test "isForbiddenPath blocks sensitive directories" {
+    // SSH keys
+    try std.testing.expect(isForbiddenPath("/home/user/.ssh/id_rsa"));
+    try std.testing.expect(isForbiddenPath("/home/user/.ssh/authorized_keys"));
+
+    // GPG keys
+    try std.testing.expect(isForbiddenPath("/home/user/.gnupg/private-keys"));
+
+    // Cloud credentials
+    try std.testing.expect(isForbiddenPath("/home/user/.aws/credentials"));
+    try std.testing.expect(isForbiddenPath("/home/user/.config/gcloud/creds.json"));
+    try std.testing.expect(isForbiddenPath("/home/user/.azure/config"));
+    try std.testing.expect(isForbiddenPath("/home/user/.kube/config"));
+
+    // ClawGate keys
+    try std.testing.expect(isForbiddenPath("/home/user/.clawgate/keys/secret.key"));
+
+    // Network credentials
+    try std.testing.expect(isForbiddenPath("/home/user/.netrc"));
+    try std.testing.expect(isForbiddenPath("/home/user/.npmrc"));
+    try std.testing.expect(isForbiddenPath("/home/user/.git-credentials"));
+
+    // Docker
+    try std.testing.expect(isForbiddenPath("/home/user/.docker/config.json"));
+}
+
+test "isForbiddenPath blocks sensitive file types" {
+    // Environment files
+    try std.testing.expect(isForbiddenPath("/app/.env"));
+    try std.testing.expect(isForbiddenPath("/app/.env.local"));
+    try std.testing.expect(isForbiddenPath("/app/.env.production"));
+    try std.testing.expect(isForbiddenPath("/project/config/.env"));
+
+    // Private keys (specific patterns)
+    try std.testing.expect(isForbiddenPath("/certs/private.pem"));
+    try std.testing.expect(isForbiddenPath("/certs/private.key"));
+    try std.testing.expect(isForbiddenPath("/keys/cert.p12"));
+    try std.testing.expect(isForbiddenPath("/home/user/.ssh/id_rsa"));
+    try std.testing.expect(isForbiddenPath("/home/user/.ssh/id_ed25519"));
+
+    // Credential JSON files
+    try std.testing.expect(isForbiddenPath("/app/credentials.json"));
+    try std.testing.expect(isForbiddenPath("/config/service-account.json"));
+    try std.testing.expect(isForbiddenPath("/app/secrets.json"));
+    try std.testing.expect(isForbiddenPath("/k8s/secrets.yaml"));
+}
+
+test "isForbiddenPath allows safe paths" {
+    // Normal project files
+    try std.testing.expect(!isForbiddenPath("/home/user/project/src/main.zig"));
+    try std.testing.expect(!isForbiddenPath("/tmp/test.txt"));
+    try std.testing.expect(!isForbiddenPath("/var/log/app.log"));
+
+    // Config files that aren't secrets
+    try std.testing.expect(!isForbiddenPath("/app/config.json"));
+    try std.testing.expect(!isForbiddenPath("/app/settings.yaml"));
+
+    // Public keys are OK
+    try std.testing.expect(!isForbiddenPath("/home/user/.clawgate/public.key"));
 }

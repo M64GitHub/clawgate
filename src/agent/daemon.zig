@@ -121,7 +121,11 @@ pub fn expandPath(
 test "expandPath expands tilde" {
     const allocator = std.testing.allocator;
 
-    const expanded = try expandPath(allocator, "~/.clawgate/tokens", "/home/user");
+    const expanded = try expandPath(
+        allocator,
+        "~/.clawgate/tokens",
+        "/home/user",
+    );
     defer allocator.free(expanded);
 
     try std.testing.expectEqualStrings("/home/user/.clawgate/tokens", expanded);

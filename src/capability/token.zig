@@ -9,7 +9,7 @@ const scope = @import("scope.zig");
 const Allocator = std.mem.Allocator;
 const base64url = std.base64.url_safe_no_pad;
 
-/// Maximum size of a token payload (base64 encoded) to prevent memory exhaustion.
+/// Maximum token payload size (base64 encoded) to prevent memory exhaustion.
 pub const MAX_TOKEN_SIZE: usize = 16 * 1024;
 
 pub const TokenError = error{

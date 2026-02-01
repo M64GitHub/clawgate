@@ -77,7 +77,8 @@ fn runWithIo(
     ) catch |err| {
         std.log.err("Failed to load tokens from {s}: {}", .{ token_dir, err });
         const stderr = File.stderr();
-        stderr.writeStreamingAll(io, "Error: Token directory not found\n") catch {};
+        const msg = "Error: Token directory not found\n";
+        stderr.writeStreamingAll(io, msg) catch {};
         return;
     };
     defer store.deinit(allocator);
@@ -91,7 +92,8 @@ fn runWithIo(
     ) catch {
         std.log.err("Failed to connect to NATS server", .{});
         const stderr = File.stderr();
-        stderr.writeStreamingAll(io, "Error: NATS connection failed\n") catch {};
+        const msg = "Error: NATS connection failed\n";
+        stderr.writeStreamingAll(io, msg) catch {};
         return;
     };
     defer client.deinit(allocator);
@@ -182,7 +184,12 @@ fn handleRequest(
         line,
         .{ .ignore_unknown_fields = true },
     ) catch {
-        return formatError(allocator, null, McpError.PARSE_ERROR, "Invalid JSON");
+        return formatError(
+            allocator,
+            null,
+            McpError.PARSE_ERROR,
+            "Invalid JSON",
+        );
     };
     defer parsed.deinit();
 
@@ -194,7 +201,14 @@ fn handleRequest(
     } else if (std.mem.eql(u8, req.method, "tools/list")) {
         return handleToolsList(allocator, req.id);
     } else if (std.mem.eql(u8, req.method, "tools/call")) {
-        return handleToolsCall(allocator, io, req.id, req.params, store, client);
+        return handleToolsCall(
+            allocator,
+            io,
+            req.id,
+            req.params,
+            store,
+            client,
+        );
     } else if (std.mem.eql(u8, req.method, "notifications/initialized")) {
         // This is a notification, no response needed
         return allocator.dupe(u8, "");
@@ -279,11 +293,12 @@ fn handleToolsList(allocator: Allocator, id: ?std.json.Value) ![]const u8 {
     // clawgate_stat
     try writer.writeAll("{\"name\":\"clawgate_stat\",");
     try writer.writeAll("\"description\":");
-    try writer.writeAll("\"Get file/directory metadata from primary machine\",");
-    try writer.writeAll("\"inputSchema\":{\"type\":\"object\",");
+    try writer.writeAll("\"Get file/directory metadata from primary machine\"");
+    try writer.writeAll(",\"inputSchema\":{\"type\":\"object\",");
     try writer.writeAll("\"properties\":{\"path\":{\"type\":\"string\",");
-    try writer.writeAll("\"description\":\"Absolute path to file or directory\"}},");
-    try writer.writeAll("\"required\":[\"path\"]}}");
+    try writer.writeAll("\"description\":");
+    try writer.writeAll("\"Absolute path to file or directory\"");
+    try writer.writeAll("}},\"required\":[\"path\"]}}");
 
     try writer.writeAll("]}}");
 
@@ -303,7 +318,12 @@ fn handleToolsCall(
     client: *nats.Client,
 ) ![]const u8 {
     const p = params orelse {
-        return formatError(allocator, id, McpError.INVALID_PARAMS, "Missing params");
+        return formatError(
+            allocator,
+            id,
+            McpError.INVALID_PARAMS,
+            "Missing params",
+        );
     };
 
     const params_obj = switch (p) {
@@ -318,7 +338,12 @@ fn handleToolsCall(
 
     // Get tool name
     const name_val = params_obj.get("name") orelse {
-        return formatError(allocator, id, McpError.INVALID_PARAMS, "Missing name");
+        return formatError(
+            allocator,
+            id,
+            McpError.INVALID_PARAMS,
+            "Missing name",
+        );
     };
     const name = switch (name_val) {
         .string => |s| s,
@@ -351,7 +376,12 @@ fn handleToolsCall(
 
     // Get path (required for all tools)
     const path_val = args.get("path") orelse {
-        return formatError(allocator, id, McpError.INVALID_PARAMS, "Missing path");
+        return formatError(
+            allocator,
+            id,
+            McpError.INVALID_PARAMS,
+            "Missing path",
+        );
     };
     const path = switch (path_val) {
         .string => |s| s,
@@ -384,13 +414,26 @@ fn handleToolsCall(
                 "content must be string",
             ),
         };
-        return executeWriteFile(allocator, io, id, path, content, store, client);
+        return executeWriteFile(
+            allocator,
+            io,
+            id,
+            path,
+            content,
+            store,
+            client,
+        );
     } else if (std.mem.eql(u8, name, "clawgate_list_directory")) {
         return executeListDirectory(allocator, io, id, path, store, client);
     } else if (std.mem.eql(u8, name, "clawgate_stat")) {
         return executeStat(allocator, io, id, path, store, client);
     } else {
-        return formatError(allocator, id, McpError.METHOD_NOT_FOUND, "Unknown tool");
+        return formatError(
+            allocator,
+            id,
+            McpError.METHOD_NOT_FOUND,
+            "Unknown tool",
+        );
     }
 }
 
@@ -436,9 +479,19 @@ fn executeReadFile(
 
     if (!response.ok) {
         if (response.err) |e| {
-            return formatError(allocator, id, mapProtocolError(e.code), e.message);
+            return formatError(
+                allocator,
+                id,
+                mapProtocolError(e.code),
+                e.message,
+            );
         }
-        return formatError(allocator, id, McpError.INTERNAL_ERROR, "Unknown error");
+        return formatError(
+            allocator,
+            id,
+            McpError.INTERNAL_ERROR,
+            "Unknown error",
+        );
     }
 
     // Format MCP success response with content
@@ -494,9 +547,19 @@ fn executeWriteFile(
 
     if (!response.ok) {
         if (response.err) |e| {
-            return formatError(allocator, id, mapProtocolError(e.code), e.message);
+            return formatError(
+                allocator,
+                id,
+                mapProtocolError(e.code),
+                e.message,
+            );
         }
-        return formatError(allocator, id, McpError.INTERNAL_ERROR, "Unknown error");
+        return formatError(
+            allocator,
+            id,
+            McpError.INTERNAL_ERROR,
+            "Unknown error",
+        );
     }
 
     const result = response.result orelse {
@@ -570,9 +633,19 @@ fn executeListDirectory(
 
     if (!response.ok) {
         if (response.err) |e| {
-            return formatError(allocator, id, mapProtocolError(e.code), e.message);
+            return formatError(
+                allocator,
+                id,
+                mapProtocolError(e.code),
+                e.message,
+            );
         }
-        return formatError(allocator, id, McpError.INTERNAL_ERROR, "Unknown error");
+        return formatError(
+            allocator,
+            id,
+            McpError.INTERNAL_ERROR,
+            "Unknown error",
+        );
     }
 
     const result = response.result orelse {
@@ -652,9 +725,19 @@ fn executeStat(
 
     if (!response.ok) {
         if (response.err) |e| {
-            return formatError(allocator, id, mapProtocolError(e.code), e.message);
+            return formatError(
+                allocator,
+                id,
+                mapProtocolError(e.code),
+                e.message,
+            );
         }
-        return formatError(allocator, id, McpError.INTERNAL_ERROR, "Unknown error");
+        return formatError(
+            allocator,
+            id,
+            McpError.INTERNAL_ERROR,
+            "Unknown error",
+        );
     }
 
     const result = response.result orelse {
@@ -855,7 +938,8 @@ fn parseNatsResponse(
                         .array => |a| a,
                         else => return error.InvalidResponse,
                     };
-                    var entries: std.ArrayListUnmanaged(protocol.Entry) = .empty;
+                    var entries: std.ArrayListUnmanaged(protocol.Entry) =
+                        .empty;
                     errdefer {
                         for (entries.items) |e| allocator.free(e.name);
                         entries.deinit(allocator);
@@ -1025,7 +1109,9 @@ fn formatToolResult(
 
     try writer.writeAll("{\"jsonrpc\":\"2.0\",");
     try writeId(writer, id);
-    try writer.writeAll(",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
+    try writer.writeAll(
+        ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"",
+    );
     try writeJsonEscaped(writer, text);
     try writer.writeAll("\"}]}}");
 
@@ -1067,7 +1153,9 @@ fn mapNatsError(
 fn mapProtocolError(code: []const u8) i32 {
     if (std.mem.eql(u8, code, "FILE_NOT_FOUND")) return McpError.FILE_NOT_FOUND;
     if (std.mem.eql(u8, code, "ACCESS_DENIED")) return McpError.ACCESS_DENIED;
-    if (std.mem.eql(u8, code, "SCOPE_VIOLATION")) return McpError.SCOPE_VIOLATION;
+    if (std.mem.eql(u8, code, "SCOPE_VIOLATION")) {
+        return McpError.SCOPE_VIOLATION;
+    }
     if (std.mem.eql(u8, code, "INVALID_TOKEN")) return McpError.NO_TOKEN;
     if (std.mem.eql(u8, code, "TOKEN_EXPIRED")) return McpError.TOKEN_EXPIRED;
     return McpError.INTERNAL_ERROR;
@@ -1201,7 +1289,10 @@ test "formatToolResult creates valid response" {
     defer parsed.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), parsed.value.result.content.len);
-    try std.testing.expectEqualStrings("text", parsed.value.result.content[0].type);
+    try std.testing.expectEqualStrings(
+        "text",
+        parsed.value.result.content[0].type,
+    );
     try std.testing.expectEqualStrings(
         "Hello, World!",
         parsed.value.result.content[0].text,

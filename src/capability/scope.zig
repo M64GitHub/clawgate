@@ -204,8 +204,12 @@ test "canonicalizePath" {
     try std.testing.expectEqualStrings("/home/user/file.txt", p4);
 
     // Escaping root returns null
-    try std.testing.expect(canonicalizePath(allocator, "/../etc/passwd") == null);
-    try std.testing.expect(canonicalizePath(allocator, "/home/../../etc") == null);
+    try std.testing.expect(
+        canonicalizePath(allocator, "/../etc/passwd") == null,
+    );
+    try std.testing.expect(
+        canonicalizePath(allocator, "/home/../../etc") == null,
+    );
 
     // Root path
     const p5 = canonicalizePath(allocator, "/").?;
@@ -213,5 +217,41 @@ test "canonicalizePath" {
     try std.testing.expectEqualStrings("/", p5);
 
     // Non-absolute path returns null
-    try std.testing.expect(canonicalizePath(allocator, "relative/path") == null);
+    try std.testing.expect(
+        canonicalizePath(allocator, "relative/path") == null,
+    );
+}
+
+test "canonicalizePath security - path traversal attacks" {
+    const allocator = std.testing.allocator;
+
+    // Various path traversal attack patterns that MUST return null
+
+    // Basic escape attempts
+    try std.testing.expect(canonicalizePath(allocator, "/..") == null);
+    try std.testing.expect(canonicalizePath(allocator, "/../") == null);
+    try std.testing.expect(canonicalizePath(allocator, "/../..") == null);
+
+    // Escape from deep path
+    try std.testing.expect(canonicalizePath(
+        allocator,
+        "/home/user/../../../etc/passwd",
+    ) == null);
+
+    // Escape with trailing components
+    try std.testing.expect(canonicalizePath(
+        allocator,
+        "/tmp/../../../etc/shadow",
+    ) == null);
+
+    // Multiple .. in sequence
+    try std.testing.expect(canonicalizePath(
+        allocator,
+        "/a/b/c/../../../../etc",
+    ) == null);
+
+    // Valid traversal that stays within bounds should work
+    const valid = canonicalizePath(allocator, "/home/user/../other/file").?;
+    defer allocator.free(valid);
+    try std.testing.expectEqualStrings("/home/other/file", valid);
 }

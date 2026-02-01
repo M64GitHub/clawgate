@@ -46,7 +46,12 @@ pub const TokenStore = struct {
         };
         errdefer allocator.free(owned_dir);
 
-        const dir = Dir.openDir(.cwd(), io, dir_path, .{ .iterate = true }) catch {
+        const dir = Dir.openDir(
+            .cwd(),
+            io,
+            dir_path,
+            .{ .iterate = true },
+        ) catch {
             return TokenStoreError.DirectoryNotFound;
         };
         defer dir.close(io);

@@ -7,12 +7,21 @@ const std = @import("std");
 const resource_daemon = @import("resource/daemon.zig");
 const agent_daemon = @import("agent/daemon.zig");
 const mcp = @import("agent/mcp.zig");
+const setup = @import("cli/setup.zig");
+const grant_cmd = @import("cli/grant.zig");
+const token_cmd = @import("cli/token.zig");
+const file_cmds = @import("cli/file_cmds.zig");
+const audit_cmd = @import("cli/audit.zig");
 
 pub const version = "0.1.0";
 
 /// Main entry point using Zig 0.16's std.process.Init.
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
+    const io = init.io;
+
+    // Get HOME from environment
+    const home: ?[]const u8 = init.environ_map.get("HOME");
 
     // Parse command line arguments
     var args_iter = std.process.Args.Iterator.initAllocator(
@@ -50,21 +59,21 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, cmd, "mcp-server")) {
         try handleMcpServer(allocator, cmd_args, init.minimal.environ);
     } else if (std.mem.eql(u8, cmd, "grant")) {
-        try handleGrant(cmd_args);
+        grant_cmd.grant(allocator, io, cmd_args, home) catch {};
     } else if (std.mem.eql(u8, cmd, "audit")) {
-        try handleAudit(cmd_args);
+        audit_cmd.run(allocator, io, cmd_args) catch {};
     } else if (std.mem.eql(u8, cmd, "cat")) {
-        try handleCat(cmd_args);
+        file_cmds.cat(allocator, io, cmd_args, home) catch {};
     } else if (std.mem.eql(u8, cmd, "ls")) {
-        try handleLs(cmd_args);
+        file_cmds.ls(allocator, io, cmd_args, home) catch {};
     } else if (std.mem.eql(u8, cmd, "write")) {
-        try handleWrite(cmd_args);
+        file_cmds.write(allocator, io, cmd_args, home) catch {};
     } else if (std.mem.eql(u8, cmd, "stat")) {
-        try handleStat(cmd_args);
+        file_cmds.stat(allocator, io, cmd_args, home) catch {};
     } else if (std.mem.eql(u8, cmd, "keygen")) {
-        try handleKeygen(cmd_args);
+        setup.keygen(allocator, io, cmd_args, home) catch {};
     } else if (std.mem.eql(u8, cmd, "token")) {
-        try handleToken(cmd_args);
+        token_cmd.run(allocator, io, cmd_args, home) catch {};
     } else if (std.mem.eql(u8, cmd, "version") or
         std.mem.eql(u8, cmd, "--version") or
         std.mem.eql(u8, cmd, "-v"))
@@ -184,54 +193,6 @@ fn handleMcpServer(
     };
 }
 
-/// Grants a capability token for file access.
-fn handleGrant(args: []const [:0]const u8) !void {
-    _ = args;
-    std.debug.print("Grant command not yet implemented\n", .{});
-}
-
-/// Displays audit log of file access events.
-fn handleAudit(args: []const [:0]const u8) !void {
-    _ = args;
-    std.debug.print("Audit command not yet implemented\n", .{});
-}
-
-/// Reads and outputs file content.
-fn handleCat(args: []const [:0]const u8) !void {
-    _ = args;
-    std.debug.print("Cat command not yet implemented\n", .{});
-}
-
-/// Lists directory contents.
-fn handleLs(args: []const [:0]const u8) !void {
-    _ = args;
-    std.debug.print("Ls command not yet implemented\n", .{});
-}
-
-/// Writes content to a file.
-fn handleWrite(args: []const [:0]const u8) !void {
-    _ = args;
-    std.debug.print("Write command not yet implemented\n", .{});
-}
-
-/// Returns file or directory metadata.
-fn handleStat(args: []const [:0]const u8) !void {
-    _ = args;
-    std.debug.print("Stat command not yet implemented\n", .{});
-}
-
-/// Generates Ed25519 keypair for token signing.
-fn handleKeygen(args: []const [:0]const u8) !void {
-    _ = args;
-    std.debug.print("Keygen command not yet implemented\n", .{});
-}
-
-/// Manages stored capability tokens.
-fn handleToken(args: []const [:0]const u8) !void {
-    _ = args;
-    std.debug.print("Token command not yet implemented\n", .{});
-}
-
 /// Prints version information.
 fn printVersion() void {
     std.debug.print("ClawGate v{s}\n", .{version});
@@ -296,4 +257,9 @@ test {
     _ = @import("agent/tokens.zig");
     _ = @import("agent/daemon.zig");
     _ = @import("agent/mcp.zig");
+    _ = @import("cli/setup.zig");
+    _ = @import("cli/grant.zig");
+    _ = @import("cli/token.zig");
+    _ = @import("cli/file_cmds.zig");
+    _ = @import("cli/audit.zig");
 }
