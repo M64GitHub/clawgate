@@ -63,6 +63,58 @@ pub fn normalizePath(path: []const u8) []const u8 {
     return result;
 }
 
+/// Canonicalizes a path by resolving . and .. components.
+/// Returns null if path is invalid (e.g., escapes root with ..).
+/// Caller owns returned memory.
+pub fn canonicalizePath(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+) ?[]const u8 {
+    // Must be absolute path
+    if (path.len == 0 or path[0] != '/') return null;
+
+    var components: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer components.deinit(allocator);
+
+    var iter = std.mem.splitScalar(u8, path, '/');
+    while (iter.next()) |component| {
+        if (component.len == 0 or std.mem.eql(u8, component, ".")) {
+            // Skip empty components and current dir
+            continue;
+        } else if (std.mem.eql(u8, component, "..")) {
+            // Go up one level
+            if (components.items.len == 0) {
+                // Trying to escape root
+                return null;
+            }
+            _ = components.pop();
+        } else {
+            components.append(allocator, component) catch return null;
+        }
+    }
+
+    // Build result
+    if (components.items.len == 0) {
+        return allocator.dupe(u8, "/") catch null;
+    }
+
+    var total_len: usize = 0;
+    for (components.items) |c| {
+        total_len += 1 + c.len; // "/" + component
+    }
+
+    const result = allocator.alloc(u8, total_len) catch return null;
+    var pos: usize = 0;
+    for (components.items) |c| {
+        result[pos] = '/';
+        pos += 1;
+        @memcpy(result[pos..][0..c.len], c);
+        pos += c.len;
+    }
+
+    return result;
+}
+
 /// Checks if a path is within a base directory.
 pub fn isWithin(base: []const u8, path: []const u8) bool {
     const norm_base = normalizePath(base);
@@ -126,4 +178,40 @@ test "isWithin" {
     try std.testing.expect(isWithin("/home/m/", "/home/m/sub/file"));
     try std.testing.expect(!isWithin("/home/m", "/home/mx/file"));
     try std.testing.expect(!isWithin("/home/m", "/home/other"));
+}
+
+test "canonicalizePath" {
+    const allocator = std.testing.allocator;
+
+    // Normal path unchanged
+    const p1 = canonicalizePath(allocator, "/home/user/file.txt").?;
+    defer allocator.free(p1);
+    try std.testing.expectEqualStrings("/home/user/file.txt", p1);
+
+    // Path with .. resolved
+    const p2 = canonicalizePath(allocator, "/home/user/../other/file.txt").?;
+    defer allocator.free(p2);
+    try std.testing.expectEqualStrings("/home/other/file.txt", p2);
+
+    // Path with . removed
+    const p3 = canonicalizePath(allocator, "/home/./user/./file.txt").?;
+    defer allocator.free(p3);
+    try std.testing.expectEqualStrings("/home/user/file.txt", p3);
+
+    // Double slashes handled
+    const p4 = canonicalizePath(allocator, "/home//user///file.txt").?;
+    defer allocator.free(p4);
+    try std.testing.expectEqualStrings("/home/user/file.txt", p4);
+
+    // Escaping root returns null
+    try std.testing.expect(canonicalizePath(allocator, "/../etc/passwd") == null);
+    try std.testing.expect(canonicalizePath(allocator, "/home/../../etc") == null);
+
+    // Root path
+    const p5 = canonicalizePath(allocator, "/").?;
+    defer allocator.free(p5);
+    try std.testing.expectEqualStrings("/", p5);
+
+    // Non-absolute path returns null
+    try std.testing.expect(canonicalizePath(allocator, "relative/path") == null);
 }

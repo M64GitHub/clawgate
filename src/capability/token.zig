@@ -9,6 +9,9 @@ const scope = @import("scope.zig");
 const Allocator = std.mem.Allocator;
 const base64url = std.base64.url_safe_no_pad;
 
+/// Maximum size of a token payload (base64 encoded) to prevent memory exhaustion.
+pub const MAX_TOKEN_SIZE: usize = 16 * 1024;
+
 pub const TokenError = error{
     InvalidFormat,
     InvalidBase64,
@@ -17,6 +20,8 @@ pub const TokenError = error{
     InvalidAlgorithm,
     TokenExpired,
     OutOfMemory,
+    ExpirationOverflow,
+    PayloadTooLarge,
 };
 
 /// A single capability grant within a token.
@@ -102,6 +107,11 @@ pub const Token = struct {
 
         if (!std.mem.eql(u8, header_parsed.value.alg, "EdDSA")) {
             return TokenError.InvalidAlgorithm;
+        }
+
+        // Check payload size before decoding to prevent memory exhaustion
+        if (payload_b64.len > MAX_TOKEN_SIZE) {
+            return TokenError.PayloadTooLarge;
         }
 
         // Decode payload
@@ -264,11 +274,16 @@ pub fn createToken(
     defer payload_json.deinit();
     const pw = &payload_json.writer;
 
+    // Check for overflow in expiration calculation
+    const exp = std.math.add(i64, now, ttl_seconds) catch {
+        return TokenError.ExpirationOverflow;
+    };
+
     try pw.writeAll("{");
     try pw.print("\"iss\":\"{s}\",", .{issuer});
     try pw.print("\"sub\":\"{s}\",", .{subject});
     try pw.print("\"iat\":{d},", .{now});
-    try pw.print("\"exp\":{d},", .{now + ttl_seconds});
+    try pw.print("\"exp\":{d},", .{exp});
     try pw.print("\"jti\":\"{s}\",", .{jti});
     try pw.writeAll("\"cg\":{\"v\":1,\"cap\":[");
 

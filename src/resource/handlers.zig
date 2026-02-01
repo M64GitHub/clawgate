@@ -7,6 +7,7 @@ const std = @import("std");
 const protocol = @import("../protocol/json.zig");
 const token_mod = @import("../capability/token.zig");
 const crypto = @import("../capability/crypto.zig");
+const scope = @import("../capability/scope.zig");
 const files = @import("files.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -16,11 +17,13 @@ pub const ErrorCode = struct {
     pub const TOKEN_EXPIRED = "TOKEN_EXPIRED";
     pub const SCOPE_VIOLATION = "SCOPE_VIOLATION";
     pub const INVALID_OP = "INVALID_OP";
+    pub const INVALID_PATH = "INVALID_PATH";
     pub const FILE_NOT_FOUND = "FILE_NOT_FOUND";
     pub const ACCESS_DENIED = "ACCESS_DENIED";
     pub const FILE_TOO_LARGE = "FILE_TOO_LARGE";
     pub const NOT_A_FILE = "NOT_A_FILE";
     pub const NOT_A_DIRECTORY = "NOT_A_DIRECTORY";
+    pub const IS_SYMLINK = "IS_SYMLINK";
     pub const INTERNAL_ERROR = "INTERNAL_ERROR";
 };
 
@@ -101,7 +104,31 @@ pub fn handleRequest(
         ) catch return HandlerError.OutOfMemory;
     }
 
-    if (!tok.allows("files", req.op, req.params.path)) {
+    // Canonicalize path to prevent traversal attacks (e.g., /../)
+    const canonical_path = scope.canonicalizePath(
+        allocator,
+        req.params.path,
+    ) orelse {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.INVALID_PATH,
+            "Invalid path",
+        ) catch return HandlerError.OutOfMemory;
+    };
+    defer allocator.free(canonical_path);
+
+    // Check against forbidden paths (security-critical files)
+    if (isForbiddenPath(canonical_path)) {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.ACCESS_DENIED,
+            "Access to this path is forbidden",
+        ) catch return HandlerError.OutOfMemory;
+    }
+
+    if (!tok.allows("files", req.op, canonical_path)) {
         return protocol.formatError(
             allocator,
             req.id,
@@ -110,7 +137,11 @@ pub fn handleRequest(
         ) catch return HandlerError.OutOfMemory;
     }
 
-    return dispatchOperation(allocator, io, req) catch |err| {
+    // Create request with canonicalized path for dispatch
+    var canonical_req = req;
+    canonical_req.params.path = canonical_path;
+
+    return dispatchOperation(allocator, io, canonical_req) catch |err| {
         return mapFileError(allocator, req.id, err) catch {
             return HandlerError.OutOfMemory;
         };
@@ -215,6 +246,26 @@ fn executeStat(
     });
 }
 
+/// Forbidden path patterns that must never be accessed regardless of token.
+const FORBIDDEN_PATTERNS = [_][]const u8{
+    "/.ssh/",
+    "/.gnupg/",
+    "/.clawgate/keys/",
+    "/.aws/",
+    "/.config/gcloud/",
+    "/.kube/",
+};
+
+/// Checks if a path matches any forbidden pattern.
+fn isForbiddenPath(path: []const u8) bool {
+    for (FORBIDDEN_PATTERNS) |pattern| {
+        if (std.mem.indexOf(u8, path, pattern) != null) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Maps file operation errors to protocol error responses.
 fn mapFileError(
     allocator: Allocator,
@@ -241,6 +292,10 @@ fn mapFileError(
         files.FileError.NotADirectory => .{
             ErrorCode.NOT_A_DIRECTORY,
             "Not a directory",
+        },
+        files.FileError.IsSymlink => .{
+            ErrorCode.IS_SYMLINK,
+            "Symlinks are not allowed",
         },
         files.FileError.OutOfMemory => .{
             ErrorCode.INTERNAL_ERROR,

@@ -13,6 +13,10 @@ const File = std.Io.File;
 pub const MAX_FILE_SIZE: usize = 100 * 1024 * 1024;
 pub const TRUNCATE_AT: usize = 512 * 1024;
 
+/// Security option: whether to follow symlinks.
+/// Default is false for security (prevents symlink-based scope escapes).
+pub const FOLLOW_SYMLINKS: bool = false;
+
 pub const FileError = error{
     FileNotFound,
     AccessDenied,
@@ -20,6 +24,7 @@ pub const FileError = error{
     NotAFile,
     NotADirectory,
     InvalidPath,
+    IsSymlink,
     IoError,
     OutOfMemory,
 };
@@ -47,11 +52,14 @@ pub fn readFile(
     offset: usize,
     max_len: ?usize,
 ) FileError!protocol.ReadResult {
-    const file = Dir.openFile(.cwd(), io, path, .{}) catch |err| {
+    const file = Dir.openFile(.cwd(), io, path, .{
+        .follow_symlinks = FOLLOW_SYMLINKS,
+    }) catch |err| {
         return switch (err) {
             error.FileNotFound => FileError.FileNotFound,
             error.AccessDenied => FileError.AccessDenied,
             error.IsDir => FileError.NotAFile,
+            error.SymLinkLoop => FileError.IsSymlink,
             else => FileError.IoError,
         };
     };
@@ -119,6 +127,24 @@ pub fn writeFile(
 ) FileError!usize {
     switch (mode) {
         .create, .overwrite => {
+            // Note: createFile doesn't have follow_symlinks option
+            // If path is a symlink, it will be followed
+            // For security, check if target exists and is a symlink first
+            if (!FOLLOW_SYMLINKS) {
+                // Check if path exists and is a symlink
+                const stat = Dir.statFile(.cwd(), io, path, .{
+                    .follow_symlinks = false,
+                }) catch |err| switch (err) {
+                    error.FileNotFound => null, // OK, file doesn't exist
+                    else => return FileError.IoError,
+                };
+                if (stat) |s| {
+                    if (s.kind == .sym_link) {
+                        return FileError.IsSymlink;
+                    }
+                }
+            }
+
             const file = Dir.createFile(.cwd(), io, path, .{
                 .truncate = true,
             }) catch |err| {
@@ -138,11 +164,13 @@ pub fn writeFile(
         .append => {
             const file = Dir.openFile(.cwd(), io, path, .{
                 .mode = .read_write,
+                .follow_symlinks = FOLLOW_SYMLINKS,
             }) catch |err| {
                 return switch (err) {
                     error.FileNotFound => FileError.FileNotFound,
                     error.AccessDenied => FileError.AccessDenied,
                     error.IsDir => FileError.NotAFile,
+                    error.SymLinkLoop => FileError.IsSymlink,
                     else => FileError.IoError,
                 };
             };
@@ -173,12 +201,13 @@ pub fn listDir(
         .cwd(),
         io,
         path,
-        .{ .iterate = true },
+        .{ .iterate = true, .follow_symlinks = FOLLOW_SYMLINKS },
     ) catch |err| {
         return switch (err) {
             error.FileNotFound => FileError.FileNotFound,
             error.AccessDenied => FileError.AccessDenied,
             error.NotDir => FileError.NotADirectory,
+            error.SymLinkLoop => FileError.IsSymlink,
             else => FileError.IoError,
         };
     };
@@ -236,7 +265,9 @@ pub fn statFile(
     io: Io,
     path: []const u8,
 ) FileError!protocol.StatResult {
-    const file = Dir.openFile(.cwd(), io, path, .{}) catch |err| {
+    const file = Dir.openFile(.cwd(), io, path, .{
+        .follow_symlinks = FOLLOW_SYMLINKS,
+    }) catch |err| {
         return switch (err) {
             error.FileNotFound => {
                 const modified = allocator.dupe(u8, "") catch {
@@ -253,6 +284,7 @@ pub fn statFile(
             error.IsDir => {
                 return statDir(allocator, io, path);
             },
+            error.SymLinkLoop => FileError.IsSymlink,
             else => FileError.IoError,
         };
     };
@@ -284,10 +316,13 @@ fn statDir(
     io: Io,
     path: []const u8,
 ) FileError!protocol.StatResult {
-    const dir = Dir.openDir(.cwd(), io, path, .{}) catch |err| {
+    const dir = Dir.openDir(.cwd(), io, path, .{
+        .follow_symlinks = FOLLOW_SYMLINKS,
+    }) catch |err| {
         return switch (err) {
             error.FileNotFound => FileError.FileNotFound,
             error.AccessDenied => FileError.AccessDenied,
+            error.SymLinkLoop => FileError.IsSymlink,
             else => FileError.IoError,
         };
     };

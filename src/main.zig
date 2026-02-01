@@ -5,6 +5,8 @@
 
 const std = @import("std");
 const resource_daemon = @import("resource/daemon.zig");
+const agent_daemon = @import("agent/daemon.zig");
+const mcp = @import("agent/mcp.zig");
 
 pub const version = "0.1.0";
 
@@ -44,9 +46,9 @@ pub fn main(init: std.process.Init) !void {
     const cmd_args = if (args.len > 2) args[2..] else &[_][:0]const u8{};
 
     if (std.mem.eql(u8, cmd, "--mode")) {
-        try handleModeCommand(allocator, cmd_args);
+        try handleModeCommand(allocator, cmd_args, init.minimal.environ);
     } else if (std.mem.eql(u8, cmd, "mcp-server")) {
-        try handleMcpServer();
+        try handleMcpServer(allocator, cmd_args, init.minimal.environ);
     } else if (std.mem.eql(u8, cmd, "grant")) {
         try handleGrant(cmd_args);
     } else if (std.mem.eql(u8, cmd, "audit")) {
@@ -83,6 +85,7 @@ pub fn main(init: std.process.Init) !void {
 fn handleModeCommand(
     allocator: std.mem.Allocator,
     args: []const [:0]const u8,
+    environ: std.process.Environ,
 ) !void {
     if (args.len == 0) {
         std.debug.print(
@@ -120,15 +123,65 @@ fn handleModeCommand(
             return;
         };
     } else if (std.mem.eql(u8, mode, "agent")) {
-        std.debug.print("Agent daemon not yet implemented\n", .{});
+        var token_dir: []const u8 = "~/.clawgate/tokens";
+        var nats_url: []const u8 = "nats://localhost:4222";
+
+        var i: usize = 0;
+        while (i < remaining_args.len) : (i += 1) {
+            const arg = remaining_args[i];
+            const has_next = i + 1 < remaining_args.len;
+            if (std.mem.eql(u8, arg, "--token-dir") and has_next) {
+                i += 1;
+                token_dir = remaining_args[i];
+            } else if (std.mem.eql(u8, arg, "--nats") and has_next) {
+                i += 1;
+                nats_url = remaining_args[i];
+            }
+        }
+
+        agent_daemon.run(allocator, .{
+            .nats_url = nats_url,
+            .token_dir = token_dir,
+            .environ = environ,
+        }) catch |err| {
+            std.debug.print("Agent daemon error: {}\n", .{err});
+            return;
+        };
     } else {
         std.debug.print("Unknown mode: {s}\n", .{mode});
     }
 }
 
 /// Starts MCP server for agent-side AI tool integration.
-fn handleMcpServer() !void {
-    std.debug.print("MCP server not yet implemented\n", .{});
+fn handleMcpServer(
+    allocator: std.mem.Allocator,
+    args: []const [:0]const u8,
+    environ: std.process.Environ,
+) !void {
+    var token_dir: []const u8 = "~/.clawgate/tokens";
+    var nats_url: []const u8 = "nats://localhost:4222";
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        const has_next = i + 1 < args.len;
+        if (std.mem.eql(u8, arg, "--token-dir") and has_next) {
+            i += 1;
+            token_dir = args[i];
+        } else if (std.mem.eql(u8, arg, "--nats") and has_next) {
+            i += 1;
+            nats_url = args[i];
+        }
+    }
+
+    mcp.run(allocator, .{
+        .nats_url = nats_url,
+        .token_dir = token_dir,
+        .environ = environ,
+    }) catch |err| {
+        std.debug.print("MCP server error: {}\n", .{err});
+        return;
+    };
 }
 
 /// Grants a capability token for file access.
@@ -240,4 +293,7 @@ test {
     _ = @import("resource/files.zig");
     _ = @import("resource/handlers.zig");
     _ = @import("resource/daemon.zig");
+    _ = @import("agent/tokens.zig");
+    _ = @import("agent/daemon.zig");
+    _ = @import("agent/mcp.zig");
 }
