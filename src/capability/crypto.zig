@@ -54,7 +54,9 @@ pub fn saveSecretKey(
     path: []const u8,
     key: SecretKey,
 ) !void {
-    const file = Dir.createFile(.cwd(), io, path, .{ .mode = 0o600 }) catch {
+    const file = Dir.createFile(.cwd(), io, path, .{
+        .permissions = File.Permissions.fromMode(0o600),
+    }) catch {
         return CryptoError.WriteError;
     };
     defer file.close(io);

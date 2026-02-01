@@ -158,41 +158,40 @@ fn displayAuditEvent(
 
     // Build output line
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
+    var writer = Io.Writer.fixed(&buf);
 
-    w.print("[{s}] ", .{ts}) catch {};
+    writer.print("[{s}] ", .{ts}) catch {};
 
     if (event.op) |op| {
-        w.print("{s} ", .{op}) catch {};
+        writer.print("{s} ", .{op}) catch {};
     }
 
     if (event.path) |path| {
-        w.print("{s} ", .{path}) catch {};
+        writer.print("{s} ", .{path}) catch {};
     }
 
     if (event.result) |result| {
         if (std.mem.eql(u8, result, "ok")) {
-            w.writeAll("OK") catch {};
+            writer.writeAll("OK") catch {};
         } else {
-            w.print("FAILED", .{}) catch {};
+            writer.print("FAILED", .{}) catch {};
             if (event.error_code) |code| {
-                w.print(" ({s})", .{code}) catch {};
+                writer.print(" ({s})", .{code}) catch {};
             }
         }
     }
 
     if (event.bytes) |bytes| {
-        w.print(" [{d} bytes]", .{bytes}) catch {};
+        writer.print(" [{d} bytes]", .{bytes}) catch {};
     }
 
     if (event.token_id) |tid| {
         // Show abbreviated token ID
         const abbrev_len = @min(tid.len, 16);
-        w.print(" token:{s}...", .{tid[0..abbrev_len]}) catch {};
+        writer.print(" token:{s}...", .{tid[0..abbrev_len]}) catch {};
     }
 
-    std.debug.print("{s}\n", .{fbs.getWritten()});
+    std.debug.print("{s}\n", .{writer.buffered()});
 }
 
 /// Prints audit command usage.

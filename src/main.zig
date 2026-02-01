@@ -262,4 +262,5 @@ test {
     _ = @import("cli/token.zig");
     _ = @import("cli/file_cmds.zig");
     _ = @import("cli/audit.zig");
+    _ = @import("config/config.zig");
 }

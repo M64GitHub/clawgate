@@ -130,7 +130,7 @@ pub fn writeFile(
         .create, .overwrite => {
             // Security: For create/overwrite we must handle symlinks carefully.
             // We use a two-phase approach to avoid TOCTOU:
-            // 1. Try to unlink any existing symlink (fails safely if not symlink)
+            // 1. Try to unlink existing symlink (fails safely if not symlink)
             // 2. Create the file with O_EXCL semantics where possible
             //
             // If path exists and is a symlink, we reject it.

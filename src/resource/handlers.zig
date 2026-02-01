@@ -557,12 +557,14 @@ test "isForbiddenPath blocks sensitive directories" {
 
     // Cloud credentials
     try std.testing.expect(isForbiddenPath("/home/user/.aws/credentials"));
-    try std.testing.expect(isForbiddenPath("/home/user/.config/gcloud/creds.json"));
+    const gcloud_path = "/home/user/.config/gcloud/creds.json";
+    try std.testing.expect(isForbiddenPath(gcloud_path));
     try std.testing.expect(isForbiddenPath("/home/user/.azure/config"));
     try std.testing.expect(isForbiddenPath("/home/user/.kube/config"));
 
     // ClawGate keys
-    try std.testing.expect(isForbiddenPath("/home/user/.clawgate/keys/secret.key"));
+    const claw_key = "/home/user/.clawgate/keys/secret.key";
+    try std.testing.expect(isForbiddenPath(claw_key));
 
     // Network credentials
     try std.testing.expect(isForbiddenPath("/home/user/.netrc"));

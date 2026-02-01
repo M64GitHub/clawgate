@@ -181,8 +181,7 @@ pub fn cat(
 
         if (parsed.value.result) |result| {
             // Output content to stdout
-            const stdout = std.posix.STDOUT_FILENO;
-            _ = std.posix.write(stdout, result.content) catch {};
+            Io.File.stdout().writeStreamingAll(io, result.content) catch {};
             if (result.truncated) {
                 std.debug.print("\n[truncated]\n", .{});
             }
