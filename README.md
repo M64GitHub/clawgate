@@ -405,6 +405,14 @@ See [Configuration Guide](docs/configuration.md) for all options.
 
 ---
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [**Glob Patterns**](docs/GLOBBING.md) | Complete reference for scope pattern matching with all edge cases |
+
+---
+
 ## Roadmap
 
 - [x] Core protocol and daemons
