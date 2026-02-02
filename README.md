@@ -1,20 +1,13 @@
-```
-     _____ _                 _____       _       
-    / ____| |               / ____|     | |      
-   | |    | | __ ___      _| |  __  __ _| |_ ___ 
-   | |    | |/ _` \ \ /\ / / | |_ |/ _` | __/ _ \
-   | |____| | (_| |\ V  V /| |__| | (_| | ||  __/
-    \_____|_|\__,_| \_/\_/  \_____|\__,_|\__\___|
-                                                 
-    🦞⛓️ Secure file access for isolated AI agents ⛓️🦞
-```
-
 [![CI](https://github.com/M64GitHub/clawgate/actions/workflows/ci.yml/badge.svg)](https://github.com/M64GitHub/clawgate/actions)
 [![Release](https://img.shields.io/github/v/release/M64GitHub/clawgate?include_prereleases)](https://github.com/M64GitHub/clawgate/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.16+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 
----
+![gemini-2 5-flash-image_make_this_logo_more_suitable_as_a_brand_logo_for_an_ai_software_security_product-0(1)](https://github.com/user-attachments/assets/6ccb9158-7dd1-49dd-95a7-48f1156a1d92)
+
+<p align="center">                                                 
+    🦞⛓️ Secure file access for isolated AI agents ⛓️🦞
+</p>
 
 **ClawGate** lets AI agents running on isolated machines securely access files on your primary machine. Instead of mounting filesystems or sharing credentials, ClawGate uses cryptographically signed capability tokens with fine-grained, time-bounded, audited access control.
 
