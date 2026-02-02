@@ -631,3 +631,176 @@ test "base64 invalid input" {
     const result = decodeBase64(allocator, "!!!invalid!!!");
     try std.testing.expectError(ProtocolError.InvalidBase64, result);
 }
+
+// Protocol boundary and edge case tests
+
+test "parse request - invalid operation rejected" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{"id":"r1","token":"t","op":"delete","params":{"path":"/tmp"}}
+    ;
+
+    const result = parseRequest(allocator, json);
+    try std.testing.expectError(ProtocolError.InvalidOperation, result);
+}
+
+test "parse request - operation case sensitive" {
+    const allocator = std.testing.allocator;
+
+    // "Read" instead of "read" - should fail
+    const json =
+        \\{"id":"r1","token":"t","op":"Read","params":{"path":"/tmp"}}
+    ;
+
+    const result = parseRequest(allocator, json);
+    try std.testing.expectError(ProtocolError.InvalidOperation, result);
+}
+
+test "parse request - missing required fields" {
+    const allocator = std.testing.allocator;
+
+    // Missing "op" field
+    const json1 =
+        \\{"id":"r1","token":"t","params":{"path":"/tmp"}}
+    ;
+    try std.testing.expectError(ProtocolError.InvalidJson, parseRequest(allocator, json1));
+
+    // Missing "params" field
+    const json2 =
+        \\{"id":"r1","token":"t","op":"read"}
+    ;
+    try std.testing.expectError(ProtocolError.InvalidJson, parseRequest(allocator, json2));
+
+    // Missing "path" in params
+    const json3 =
+        \\{"id":"r1","token":"t","op":"read","params":{}}
+    ;
+    try std.testing.expectError(ProtocolError.InvalidJson, parseRequest(allocator, json3));
+}
+
+test "parse request - empty strings accepted" {
+    const allocator = std.testing.allocator;
+
+    // Empty id and token are technically valid (validation happens elsewhere)
+    const json =
+        \\{"id":"","token":"","op":"read","params":{"path":""}}
+    ;
+
+    var parsed = try parseRequest(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("", parsed.value.id);
+    try std.testing.expectEqualStrings("", parsed.value.token);
+}
+
+test "parse request - extra fields ignored" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{"id":"r1","token":"t","op":"read","params":{"path":"/tmp"},
+    ++
+        \\"extra":"ignored","nested":{"also":"ignored"}}
+    ;
+
+    var parsed = try parseRequest(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("r1", parsed.value.id);
+}
+
+test "writeJsonEscaped - control characters" {
+    const allocator = std.testing.allocator;
+
+    // Test string with various control characters
+    const test_str = "null:\x00 bell:\x07 formfeed:\x0c";
+
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    try writeJsonEscaped(&output.writer, test_str);
+
+    const result = output.written();
+    // Control characters should be escaped as \uXXXX
+    try std.testing.expect(std.mem.indexOf(u8, result, "\\u0000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\\u0007") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\\u000c") != null);
+}
+
+test "writeJsonEscaped - quotes and backslash" {
+    const allocator = std.testing.allocator;
+
+    const test_str = "path with \"quotes\" and \\backslash";
+
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    try writeJsonEscaped(&output.writer, test_str);
+
+    const result = output.written();
+    try std.testing.expect(std.mem.indexOf(u8, result, "\\\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\\\\") != null);
+}
+
+test "base64 decode - empty string" {
+    const allocator = std.testing.allocator;
+
+    const decoded = try decodeBase64(allocator, "");
+    defer allocator.free(decoded);
+
+    try std.testing.expectEqual(@as(usize, 0), decoded.len);
+}
+
+test "base64 decode - padding variations" {
+    const allocator = std.testing.allocator;
+
+    // Standard base64 with padding
+    const d1 = try decodeBase64(allocator, "YQ==");
+    defer allocator.free(d1);
+    try std.testing.expectEqualStrings("a", d1);
+
+    const d2 = try decodeBase64(allocator, "YWI=");
+    defer allocator.free(d2);
+    try std.testing.expectEqualStrings("ab", d2);
+
+    const d3 = try decodeBase64(allocator, "YWJj");
+    defer allocator.free(d3);
+    try std.testing.expectEqualStrings("abc", d3);
+}
+
+test "format response - filenames with special chars" {
+    const allocator = std.testing.allocator;
+
+    const entries = [_]Entry{
+        .{ .name = "file\"with\"quotes.txt", .type = "file", .size = 10 },
+        .{ .name = "file\\with\\backslash.txt", .type = "file", .size = 20 },
+        .{ .name = "file\twith\ttab.txt", .type = "file", .size = 30 },
+    };
+
+    const json = try formatSuccess(allocator, "req", .{
+        .list = .{ .entries = &entries },
+    });
+    defer allocator.free(json);
+
+    // Verify JSON is valid (can be parsed)
+    const parsed = std.json.parseFromSlice(
+        struct {
+            result: struct {
+                entries: []const struct {
+                    name: []const u8,
+                    type: []const u8,
+                    size: ?usize = null,
+                },
+            },
+        },
+        allocator,
+        json,
+        .{ .ignore_unknown_fields = true },
+    ) catch |err| {
+        std.debug.print("Failed to parse: {}\n", .{err});
+        return err;
+    };
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), parsed.value.result.entries.len);
+}

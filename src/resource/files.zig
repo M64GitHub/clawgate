@@ -594,3 +594,187 @@ test "read file - symlink rejected" {
         try std.testing.expectError(FileError.IsSymlink, result);
     }
 }
+
+// Security edge case tests
+
+test "read file - offset past EOF returns empty" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const test_path = "/tmp/clawgate_test_offset_eof.txt";
+    const test_content = "short";
+
+    {
+        const file = try Dir.createFile(.cwd(), io, test_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, test_content);
+    }
+    defer Dir.deleteFile(.cwd(), io, test_path) catch {};
+
+    // Offset past end of file
+    var result = try readFile(allocator, io, test_path, 100, null);
+    defer freeReadResult(allocator, &result);
+
+    try std.testing.expectEqual(@as(usize, 0), result.content.len);
+    try std.testing.expectEqual(@as(usize, 5), result.size);
+    try std.testing.expect(!result.truncated);
+}
+
+test "read file - length clamped to file size" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const test_path = "/tmp/clawgate_test_clamp.txt";
+    const test_content = "short";
+
+    {
+        const file = try Dir.createFile(.cwd(), io, test_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, test_content);
+    }
+    defer Dir.deleteFile(.cwd(), io, test_path) catch {};
+
+    // Request more bytes than file contains
+    var result = try readFile(allocator, io, test_path, 0, 1000000);
+    defer freeReadResult(allocator, &result);
+
+    try std.testing.expectEqualStrings("short", result.content);
+    try std.testing.expect(!result.truncated);
+}
+
+test "read file - truncation at TRUNCATE_AT" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const test_path = "/tmp/clawgate_test_truncate.txt";
+
+    // Create file larger than TRUNCATE_AT
+    const large_content = try allocator.alloc(u8, TRUNCATE_AT + 1000);
+    defer allocator.free(large_content);
+    @memset(large_content, 'X');
+
+    {
+        const file = try Dir.createFile(.cwd(), io, test_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, large_content);
+    }
+    defer Dir.deleteFile(.cwd(), io, test_path) catch {};
+
+    // Read without explicit limit - should truncate at TRUNCATE_AT
+    var result = try readFile(allocator, io, test_path, 0, null);
+    defer freeReadResult(allocator, &result);
+
+    try std.testing.expectEqual(TRUNCATE_AT, result.content.len);
+    try std.testing.expect(result.truncated);
+    try std.testing.expectEqual(TRUNCATE_AT + 1000, result.size);
+}
+
+test "write file - empty content" {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const test_path = "/tmp/clawgate_test_empty_write.txt";
+    defer Dir.deleteFile(.cwd(), io, test_path) catch {};
+
+    // Writing empty content should succeed
+    const written = try writeFile(io, test_path, "", .create);
+    try std.testing.expectEqual(@as(usize, 0), written);
+}
+
+test "write mode fromString - invalid defaults to create" {
+    // Invalid mode string should default to create
+    try std.testing.expectEqual(WriteMode.create, WriteMode.fromString("invalid"));
+    try std.testing.expectEqual(WriteMode.create, WriteMode.fromString("OVERWRITE"));
+    try std.testing.expectEqual(WriteMode.create, WriteMode.fromString(""));
+
+    // Valid modes
+    try std.testing.expectEqual(WriteMode.overwrite, WriteMode.fromString("overwrite"));
+    try std.testing.expectEqual(WriteMode.append, WriteMode.fromString("append"));
+    try std.testing.expectEqual(WriteMode.create, WriteMode.fromString(null));
+}
+
+test "stat directory" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var result = try statFile(allocator, io, "/tmp");
+    defer freeStatResult(allocator, &result);
+
+    try std.testing.expect(result.exists);
+    try std.testing.expectEqualStrings("dir", result.type);
+}
+
+test "list nonexistent directory returns error" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const result = listDir(allocator, io, "/tmp/nonexistent_dir_12345", 1);
+    try std.testing.expectError(FileError.FileNotFound, result);
+}
+
+test "list file as directory returns error" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const test_path = "/tmp/clawgate_test_not_dir.txt";
+
+    {
+        const file = try Dir.createFile(.cwd(), io, test_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "not a directory");
+    }
+    defer Dir.deleteFile(.cwd(), io, test_path) catch {};
+
+    const result = listDir(allocator, io, test_path, 1);
+    try std.testing.expectError(FileError.NotADirectory, result);
+}
+
+test "read file as directory returns NotAFile" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // /tmp is a directory, not a file
+    const result = readFile(allocator, io, "/tmp", 0, null);
+    try std.testing.expectError(FileError.NotAFile, result);
+}
+
+test "format timestamp epoch zero" {
+    const allocator = std.testing.allocator;
+
+    // Epoch 0 = 1970-01-01 00:00:00
+    const mtime = Io.Timestamp{ .nanoseconds = 0 };
+
+    const ts = formatTimestamp(allocator, mtime) catch unreachable;
+    defer allocator.free(ts);
+
+    try std.testing.expectEqualStrings("1970-01-01T00:00:00Z", ts);
+}
+
+test "format timestamp far future" {
+    const allocator = std.testing.allocator;
+
+    // Year 2100 timestamp
+    const secs_2100: i64 = 4102444800;
+    const mtime = Io.Timestamp{
+        .nanoseconds = secs_2100 * std.time.ns_per_s,
+    };
+
+    const ts = formatTimestamp(allocator, mtime) catch unreachable;
+    defer allocator.free(ts);
+
+    try std.testing.expect(std.mem.startsWith(u8, ts, "2100-"));
+}

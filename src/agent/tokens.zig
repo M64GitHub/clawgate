@@ -157,8 +157,10 @@ pub const TokenStore = struct {
         );
         errdefer allocator.free(filename);
 
-        // Save to disk
-        const file = Dir.createFile(.cwd(), io, filename, .{}) catch {
+        // Save to disk with restricted permissions (owner only)
+        const file = Dir.createFile(.cwd(), io, filename, .{
+            .permissions = std.Io.File.Permissions.fromMode(0o600),
+        }) catch {
             return TokenStoreError.IoError;
         };
         defer file.close(io);
@@ -245,15 +247,18 @@ fn loadTokenFile(
     }
 
     const raw = try allocator.alloc(u8, file_size);
-    errdefer allocator.free(raw);
 
     const bytes_read = file.readPositionalAll(io, raw, 0) catch {
+        allocator.free(raw);
         return TokenStoreError.IoError;
     };
 
     // Trim whitespace (newlines at end)
     const trimmed = std.mem.trim(u8, raw[0..bytes_read], " \t\r\n");
-    const raw_trimmed = try allocator.dupe(u8, trimmed);
+    const raw_trimmed = allocator.dupe(u8, trimmed) catch {
+        allocator.free(raw);
+        return TokenStoreError.OutOfMemory;
+    };
     allocator.free(raw);
     errdefer allocator.free(raw_trimmed);
 
@@ -440,4 +445,180 @@ test "addToken and removeToken" {
     // Should not find token anymore
     const not_found = store.findForPath("files", "read", "/home/user/file.txt");
     try std.testing.expect(not_found == null);
+}
+
+// Error handling tests
+
+test "loadFromDir - nonexistent directory" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const result = TokenStore.loadFromDir(
+        allocator,
+        io,
+        "/tmp/nonexistent_clawgate_dir_12345",
+    );
+    try std.testing.expectError(TokenStoreError.DirectoryNotFound, result);
+}
+
+test "loadFromDir - skips non-token files" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const test_dir = "/tmp/clawgate_test_non_token";
+    Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
+    defer {
+        Dir.deleteFile(.cwd(), io, "/tmp/clawgate_test_non_token/other.txt") catch {};
+        Dir.deleteDir(.cwd(), io, test_dir) catch {};
+    }
+
+    // Create a non-.token file
+    const other_path = "/tmp/clawgate_test_non_token/other.txt";
+    const file = try Dir.createFile(.cwd(), io, other_path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, "not a token");
+
+    // Load store - should skip the non-.token file
+    var store = try TokenStore.loadFromDir(allocator, io, test_dir);
+    defer store.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), store.tokens.len);
+}
+
+test "loadFromDir - skips invalid token files" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const test_dir = "/tmp/clawgate_test_invalid_token";
+    Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
+    defer {
+        Dir.deleteFile(.cwd(), io, "/tmp/clawgate_test_invalid_token/bad.token") catch {};
+        Dir.deleteDir(.cwd(), io, test_dir) catch {};
+    }
+
+    // Create invalid token file
+    const bad_path = "/tmp/clawgate_test_invalid_token/bad.token";
+    const file = try Dir.createFile(.cwd(), io, bad_path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, "not.a.valid.jwt");
+
+    // Load store - should skip invalid token and not crash
+    var store = try TokenStore.loadFromDir(allocator, io, test_dir);
+    defer store.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), store.tokens.len);
+}
+
+test "loadFromDir - skips empty token files" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const test_dir = "/tmp/clawgate_test_empty_token";
+    Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
+    defer {
+        Dir.deleteFile(.cwd(), io, "/tmp/clawgate_test_empty_token/empty.token") catch {};
+        Dir.deleteDir(.cwd(), io, test_dir) catch {};
+    }
+
+    // Create empty token file
+    const empty_path = "/tmp/clawgate_test_empty_token/empty.token";
+    const file = try Dir.createFile(.cwd(), io, empty_path, .{});
+    file.close(io);
+
+    // Load store - should skip empty file
+    var store = try TokenStore.loadFromDir(allocator, io, test_dir);
+    defer store.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), store.tokens.len);
+}
+
+test "removeToken - nonexistent token ID" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const test_dir = "/tmp/clawgate_test_remove_nonexistent";
+    Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
+    defer Dir.deleteDir(.cwd(), io, test_dir) catch {};
+
+    var store = try TokenStore.loadFromDir(allocator, io, test_dir);
+    defer store.deinit(allocator);
+
+    // Try to remove token that doesn't exist
+    const result = store.removeToken(allocator, io, "nonexistent_id");
+    try std.testing.expectError(error.TokenNotFound, result);
+}
+
+test "addToken - invalid JWT rejected" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const test_dir = "/tmp/clawgate_test_add_invalid";
+    Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
+    defer Dir.deleteDir(.cwd(), io, test_dir) catch {};
+
+    var store = try TokenStore.loadFromDir(allocator, io, test_dir);
+    defer store.deinit(allocator);
+
+    // Try to add invalid JWT
+    const result = store.addToken(allocator, io, "not.a.valid.jwt");
+    try std.testing.expectError(TokenStoreError.TokenParseError, result);
+
+    // Store should still be empty
+    try std.testing.expectEqual(@as(usize, 0), store.tokens.len);
+}
+
+test "list returns all tokens" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const crypto = @import("../capability/crypto.zig");
+
+    // Use unique directory name to avoid test pollution
+    const test_dir = "/tmp/clawgate_test_list_tokens";
+    // Clean up any leftover files from previous runs
+    Dir.deleteDir(.cwd(), io, test_dir) catch {};
+    Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
+    defer Dir.deleteDir(.cwd(), io, test_dir) catch {};
+
+    var store = try TokenStore.loadFromDir(allocator, io, test_dir);
+    defer store.deinit(allocator);
+
+    // Initially empty
+    try std.testing.expectEqual(@as(usize, 0), store.list().len);
+
+    // Add a token
+    const kp = crypto.generateKeypair(io);
+    const capabilities = [_]token_mod.Capability{
+        .{ .r = "files", .o = &[_][]const u8{"read"}, .s = "/**" },
+    };
+
+    const jwt = try token_mod.createToken(
+        allocator,
+        io,
+        kp.secret_key,
+        "issuer",
+        "subject",
+        &capabilities,
+        3600,
+    );
+    defer allocator.free(jwt);
+
+    try store.addToken(allocator, io, jwt);
+
+    // Now should have 1
+    try std.testing.expectEqual(@as(usize, 1), store.list().len);
 }

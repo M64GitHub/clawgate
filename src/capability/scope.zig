@@ -122,6 +122,10 @@ pub fn isWithin(base: []const u8, path: []const u8) bool {
 
     if (!std.mem.startsWith(u8, norm_path, norm_base)) return false;
     if (norm_path.len == norm_base.len) return true;
+
+    // Special case: root "/" contains everything
+    if (norm_base.len == 1 and norm_base[0] == '/') return true;
+
     return norm_path[norm_base.len] == '/';
 }
 
@@ -254,4 +258,154 @@ test "canonicalizePath security - path traversal attacks" {
     const valid = canonicalizePath(allocator, "/home/user/../other/file").?;
     defer allocator.free(valid);
     try std.testing.expectEqualStrings("/home/other/file", valid);
+}
+
+// Additional security edge case tests
+
+test "canonicalizePath empty path returns null" {
+    const allocator = std.testing.allocator;
+
+    // Empty path is not valid
+    try std.testing.expect(canonicalizePath(allocator, "") == null);
+}
+
+test "canonicalizePath root path" {
+    const allocator = std.testing.allocator;
+
+    // Root path should be valid
+    const root = canonicalizePath(allocator, "/").?;
+    defer allocator.free(root);
+    try std.testing.expectEqualStrings("/", root);
+
+    // Root with trailing components
+    const root2 = canonicalizePath(allocator, "/./").?;
+    defer allocator.free(root2);
+    try std.testing.expectEqualStrings("/", root2);
+}
+
+test "canonicalizePath consecutive slashes" {
+    const allocator = std.testing.allocator;
+
+    // Many consecutive slashes should be collapsed
+    const p1 = canonicalizePath(allocator, "//home//user///file").?;
+    defer allocator.free(p1);
+    try std.testing.expectEqualStrings("/home/user/file", p1);
+
+    // Extreme case
+    const p2 = canonicalizePath(allocator, "/////a/////b/////c").?;
+    defer allocator.free(p2);
+    try std.testing.expectEqualStrings("/a/b/c", p2);
+}
+
+test "canonicalizePath with dot-dot-like names" {
+    const allocator = std.testing.allocator;
+
+    // Names that look like .. but aren't should be preserved
+    const p1 = canonicalizePath(allocator, "/home/...").?;
+    defer allocator.free(p1);
+    try std.testing.expectEqualStrings("/home/...", p1);
+
+    const p2 = canonicalizePath(allocator, "/home/..a").?;
+    defer allocator.free(p2);
+    try std.testing.expectEqualStrings("/home/..a", p2);
+
+    const p3 = canonicalizePath(allocator, "/home/a..").?;
+    defer allocator.free(p3);
+    try std.testing.expectEqualStrings("/home/a..", p3);
+}
+
+test "matches with empty strings" {
+    // Empty path: /** matches empty (prefix is empty, returns true)
+    // This is intentional: empty prefix means "match anything"
+    try std.testing.expect(!matches("/home/**", ""));
+    try std.testing.expect(matches("/**", "")); // Empty prefix matches all
+    try std.testing.expect(!matches("/*", ""));
+
+    // Empty pattern: exact match with empty path only
+    try std.testing.expect(!matches("", "/home/file"));
+    try std.testing.expect(matches("", "")); // Both empty = exact match
+}
+
+test "matches with root pattern" {
+    // /** matches everything including root
+    try std.testing.expect(matches("/**", "/"));
+    try std.testing.expect(matches("/**", "/anything"));
+
+    // /* matches "/" because:
+    // - prefix is empty, path starts with ""
+    // - path[0] is '/', remainder after '/' is empty
+    // - empty remainder has no '/', so returns true
+    // This is intentional: root directory is a "single level" under nothing
+    try std.testing.expect(matches("/*", "/"));
+}
+
+test "isWithin with root base" {
+    // Root as base should match everything
+    try std.testing.expect(isWithin("/", "/any/path"));
+    try std.testing.expect(isWithin("/", "/"));
+}
+
+test "isWithin prevents prefix confusion" {
+    // /home/m should not match /home/mario (prefix but not path boundary)
+    try std.testing.expect(!isWithin("/home/m", "/home/mario"));
+    try std.testing.expect(!isWithin("/home/m", "/home/mxyz/file"));
+
+    // But should match actual subdirs
+    try std.testing.expect(isWithin("/home/m", "/home/m/file"));
+    try std.testing.expect(isWithin("/home/m", "/home/m"));
+}
+
+test "matches recursive wildcard prefix boundary" {
+    // /home/m/** should NOT match /home/mario (not a subpath)
+    try std.testing.expect(!matches("/home/m/**", "/home/mario"));
+    try std.testing.expect(!matches("/home/m/**", "/home/mxyz/file"));
+
+    // But should match actual subdirs
+    try std.testing.expect(matches("/home/m/**", "/home/m/file"));
+    try std.testing.expect(matches("/home/m/**", "/home/m"));
+}
+
+test "canonicalizePath very long path" {
+    const allocator = std.testing.allocator;
+
+    // Build a very long path (100 components)
+    var long_path_buf: [2048]u8 = undefined;
+    var pos: usize = 0;
+    for (0..100) |i| {
+        long_path_buf[pos] = '/';
+        pos += 1;
+        const written = std.fmt.bufPrint(
+            long_path_buf[pos..],
+            "dir{d}",
+            .{i},
+        ) catch unreachable;
+        pos += written.len;
+    }
+    const long_path = long_path_buf[0..pos];
+
+    // Should still work
+    const result = canonicalizePath(allocator, long_path).?;
+    defer allocator.free(result);
+    try std.testing.expect(result.len > 0);
+    try std.testing.expect(result[0] == '/');
+}
+
+test "extension pattern edge cases" {
+    // Extension with empty base name
+    try std.testing.expect(matches("/home/*.txt", "/home/.txt"));
+
+    // Pattern at root
+    try std.testing.expect(matches("/*.txt", "/file.txt"));
+    try std.testing.expect(!matches("/*.txt", "/sub/file.txt"));
+}
+
+test "single level wildcard edge cases" {
+    // File with multiple dots
+    try std.testing.expect(matches("/tmp/*", "/tmp/file.tar.gz"));
+
+    // Hidden files (starting with .)
+    try std.testing.expect(matches("/tmp/*", "/tmp/.hidden"));
+
+    // File that is just the parent
+    try std.testing.expect(!matches("/tmp/*", "/tmp"));
 }
