@@ -32,15 +32,15 @@ But now your agent needs to read your project files. Your options?
 
 ## The Solution
 
-ClawGate provides **secure, scoped, audited file access** over NATS messaging:
+ClawGate provides **secure, scoped, audited file access** over direct TCP with end-to-end encryption:
 
 ```
 ┌─────────────────────┐                    ┌─────────────────────────┐
 │   YOUR LAPTOP       │                    │   ISOLATED MACHINE      │
 │                     │                    │                         │
 │   ~/projects/       │                    │   OpenClaw / Claude     │
-│   ~/documents/      │◄────── NATS ──────►│   ClawGate Agent        │
-│                     │    (encrypted)     │                         │
+│   ~/documents/      │◄──── TCP:4223 ────►│   ClawGate Agent        │
+│                     │   (E2E encrypted)  │                         │
 │   ClawGate Resource │                    │   "Read ~/projects/     │
 │   Daemon            │                    │    app/src/main.zig"    │
 └─────────────────────┘                    └─────────────────────────┘
@@ -79,33 +79,29 @@ sudo cp zig-out/bin/clawgate /usr/local/bin/
 
 ### Setup (60 seconds)
 
-**1. Start NATS** (if not already running):
-```bash
-# Install: https://nats.io/download/
-nats-server
-```
-
-**2. Generate keys** (on your laptop):
+**1. Generate keys** (on your laptop):
 ```bash
 clawgate keygen
 # Creates ~/.clawgate/keys/private.key and public.key
 ```
 
-**3. Start resource daemon** (on your laptop):
-```bash
-clawgate --mode resource
-```
-
-**4. Grant access** (on your laptop):
+**2. Grant access** (on your laptop):
 ```bash
 clawgate grant --read ~/projects --ttl 24h > token.txt
-# Copy token.txt to your agent machine
+# Copy token.txt and public.key to your agent machine
 ```
 
-**5. Start agent daemon** (on isolated machine):
+**3. Start agent daemon** (on isolated machine):
 ```bash
 clawgate token add "$(cat token.txt)"
 clawgate --mode agent
+# Listens on 0.0.0.0:4223
+```
+
+**4. Start resource daemon** (on your laptop):
+```bash
+clawgate --mode resource --connect <agent-ip>:4223
+# Connects to agent with E2E encryption
 ```
 
 **Done.** Your agent can now securely read files in `~/projects`.
@@ -145,7 +141,6 @@ clawgate write ~/projects/app/notes.md --content "TODO: refactor"
 ClawGate isn't locked to OpenClaw. It works with **any AI agent** that can:
 - Call CLI commands (Claude Code, Cursor, Aider, etc.)
 - Use MCP servers
-- Make HTTP/NATS requests
 
 **Examples:**
 
@@ -155,9 +150,8 @@ ClawGate isn't locked to OpenClaw. It works with **any AI agent** that can:
 | **Claude Code** | Skill file with CLI commands |
 | **Cursor** | Custom tool calling clawgate CLI |
 | **Aider** | Shell commands in chat |
-| **Custom agents** | Direct NATS protocol (see [Protocol Spec](docs/protocol.md)) |
 
-The MCP server and CLI are convenience layers - the core is a simple request/response protocol over NATS that any agent can speak.
+The MCP server and CLI are convenience layers over the core E2E encrypted TCP protocol.
 
 ---
 
@@ -198,10 +192,10 @@ clawgate grant --read /home/mario/projects/*.zig # Glob pattern
 ### Request Flow
 
 ```
-Agent                    NATS                  Resource Daemon
+Agent                   E2E Tunnel            Resource Daemon
   │                        │                         │
   │ ── read request ────►  │  ────────────────────►  │
-  │    + token             │                         │
+  │    + token             │   (XChaCha20-Poly1305)  │
   │                        │                         ├─ Verify signature
   │                        │                         ├─ Check not expired
   │                        │                         ├─ Check path in scope
@@ -213,7 +207,7 @@ Agent                    NATS                  Resource Daemon
 
 ### Audit Trail
 
-Every operation is logged to the `clawgate.audit.*` NATS subjects:
+Every operation is logged locally on the resource daemon:
 
 ```bash
 clawgate audit
@@ -229,13 +223,14 @@ clawgate audit
 | Feature | Description |
 |---------|-------------|
 | **Capability-based security** | Cryptographic Ed25519 tokens, not passwords |
+| **End-to-end encryption** | X25519 + XChaCha20-Poly1305 with forward secrecy |
 | **Fine-grained access** | Grant `/projects/app/**` not "everything" |
 | **Time-bounded tokens** | 1h, 24h, 7d - you choose |
 | **Complete audit trail** | Every operation logged with token ID |
 | **Forbidden paths** | `~/.ssh`, `~/.aws`, `~/.gnupg` can NEVER be granted |
 | **Large file handling** | Files >512KB automatically truncated with metadata |
 | 🦞 **OpenClaw native** | MCP server + skill file included |
-| **Fast** | Zig + NATS = minimal latency |
+| **Fast** | Pure Zig, zero dependencies, minimal latency |
 | **Zero trust design** | Assumes agent machine is compromised |
 
 ---
@@ -252,20 +247,21 @@ ClawGate is a **security tool**. We take this seriously.
 
 | Layer | Protection |
 |-------|------------|
-| **Transport** | TLS 1.3 encryption, NKey authentication |
+| **Transport** | X25519 key exchange + XChaCha20-Poly1305 encryption |
+| **Forward secrecy** | Fresh ephemeral keys per session |
 | **Authentication** | Ed25519 signed tokens |
 | **Authorization** | Per-request scope validation |
 | **Path safety** | Canonicalization, traversal protection |
 | **Forbidden paths** | ~/.ssh, ~/.aws, ~/.gnupg - hardcoded, ungrantable |
 | **Time limits** | Tokens expire, limiting blast radius |
-| **Audit** | Cryptographic proof of every operation |
+| **Audit** | Every operation logged locally |
 
 ### Security Practices
 
 - **Security audit every development phase** - We don't ship without review
 - **No dynamic memory in hot path** - Bounded allocations only
 - **Fuzz tested** - Token parsing, path matching, JSON handling
-- **Dependency minimal** - Zig stdlib + nats.zig only
+- **Zero dependencies** - Zig stdlib only, no supply chain risk
 
 ### Reporting Vulnerabilities
 
@@ -331,15 +327,14 @@ EXAMPLES:
 ClawGate uses `~/.clawgate/config.toml`:
 
 ```toml
-[nats]
-url = "nats://localhost:4222"
-# For TLS:
-# url = "tls://nats.example.com:4222"
-# tls_ca_file = "~/.clawgate/ca.pem"
+[tcp]
+# Agent daemon settings
+listen_addr = "0.0.0.0"
+listen_port = 4223
 
-[nats.auth]
-# NKey authentication (recommended)
-nkey_seed_file = "~/.clawgate/nats.nk"
+# Resource daemon settings
+connect_addr = "agent.example.com"
+connect_port = 4223
 
 [keys]
 private_key = "~/.clawgate/keys/private.key"
@@ -360,8 +355,6 @@ truncate_at = 524288       # 512KB
 token_dir = "~/.clawgate/tokens"
 ```
 
-See [Configuration Guide](docs/configuration.md) for all options.
-
 ---
 
 ## Architecture
@@ -370,31 +363,32 @@ See [Configuration Guide](docs/configuration.md) for all options.
 ┌────────────────────────────────────────────────────────────────────┐
 │                         YOUR LAPTOP                                │
 │                                                                    │
-│  ┌─────────────┐    ┌──────────────────┐    ┌─────────────────┐    │
-│  │   Files     │◄───│ Resource Daemon  │◄───│   NATS Server   │    │
-│  │ ~/projects/ │    │                  │    │   :4222         │    │
-│  └─────────────┘    │ • Token verify   │    └────────┬────────┘    │
-│                     │ • Scope check    │             │             │
-│                     │ • File ops       │             │             │
-│                     │ • Audit publish  │             │             │
-│                     └──────────────────┘             │             │
-│                                                      │             │
-└──────────────────────────────────────────────────────┼─────────────┘
-                                                       │
-                                            NATS (TLS) │
-                                                       │
-┌──────────────────────────────────────────────────────┼─────────────┐
-│                   ISOLATED MACHINE  (i.e. mac mini)  │             │
-│                                                      │             │
-│  ┌─────────────────┐    ┌──────────────────┐         │             │
-│  │    OpenClaw     │───►│  Agent Daemon    │◄────────┘             │
+│  ┌─────────────┐    ┌──────────────────┐                           │
+│  │   Files     │◄───│ Resource Daemon  │                           │
+│  │ ~/projects/ │    │                  │                           │
+│  └─────────────┘    │ • Token verify   │                           │
+│                     │ • Scope check    │                           │
+│                     │ • File ops       │                           │
+│                     │ • Audit logging  │                           │
+│                     └────────┬─────────┘                           │
+│                              │                                     │
+└──────────────────────────────┼─────────────────────────────────────┘
+                               │
+                    TCP :4223  │  E2E Encrypted
+                   (outbound)  │  X25519 + XChaCha20
+                               │
+┌──────────────────────────────┼─────────────────────────────────────┐
+│     ISOLATED MACHINE         │        (i.e. mac mini)              │
+│                              │                                     │
+│  ┌─────────────────┐    ┌────┴─────────────┐                       │
+│  │    OpenClaw     │───►│  Agent Daemon    │◄── listens :4223      │
 │  │    or any AI    │    │                  │                       │
 │  │    agent        │    │ • Token store    │                       │
 │  └────────┬────────┘    │ • Request proxy  │                       │
+│           │             │ • IPC server     │                       │
 │           │             └──────────────────┘                       │
 │           │                      ▲                                 │
-│           │                      │                                 │
-│           ▼                      │                                 │
+│           ▼                      │ Unix socket                     │
 │  ┌─────────────────┐             │                                 │
 │  │   MCP Server    │─────────────┘                                 │
 │  │   (stdio)       │                                               │
@@ -432,9 +426,11 @@ See [Configuration Guide](docs/configuration.md) for all options.
 | Technology | Purpose |
 |------------|---------|
 | [**Zig**](https://ziglang.org) | Memory-safe systems programming |
-| [**NATS**](https://nats.io) | Cloud-native messaging |
-| [**nats.zig**](https://github.com/nats-io/nats.zig) | Native Zig NATS client |
-| [**Ed25519**](https://ed25519.cr.yp.to/) | Digital signatures |
+| [**Ed25519**](https://ed25519.cr.yp.to/) | Digital signatures for capability tokens |
+| [**X25519**](https://cr.yp.to/ecdh.html) | Elliptic curve Diffie-Hellman key exchange |
+| [**XChaCha20-Poly1305**](https://datatracker.ietf.org/doc/html/rfc8439) | Authenticated encryption |
+
+**Zero external dependencies** - Everything is built on Zig's standard library.
 
 ---
 

@@ -1,50 +1,41 @@
 //! Audit log viewer for ClawGate.
 //!
-//! Subscribes to audit events from the resource daemon and
-//! displays them in real-time.
+//! Displays audit events from local resource daemon logs.
+//! Audit events are logged to stdout by the resource daemon.
 
 const std = @import("std");
-const nats = @import("nats");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 pub const AuditError = error{
     InvalidArgs,
-    ConnectionFailed,
-    SubscriptionFailed,
     OutOfMemory,
 };
 
 /// Configuration for audit command.
 pub const AuditConfig = struct {
-    nats_url: []const u8 = "nats://localhost:4222",
     json_output: bool = false,
     filter: ?[]const u8 = null,
 };
 
 /// Runs the audit log viewer.
-/// Subscribes to clawgate.audit.> and displays events.
+/// In the current architecture, audit events are logged locally by the
+/// resource daemon. This command provides usage information.
 pub fn run(
     allocator: Allocator,
     io: Io,
     args: []const [:0]const u8,
 ) AuditError!void {
+    _ = allocator;
+    _ = io;
+
     var config = AuditConfig{};
 
     // Parse arguments
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--nats") or std.mem.eql(u8, arg, "-n")) {
-            if (i + 1 >= args.len) {
-                printAuditUsage();
-                return AuditError.InvalidArgs;
-            }
-            i += 1;
-            config.nats_url = args[i];
-        } else if (std.mem.eql(u8, arg, "--json") or
-            std.mem.eql(u8, arg, "-j"))
-        {
+        if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "-j")) {
             config.json_output = true;
         } else if (std.mem.eql(u8, arg, "--filter") or
             std.mem.eql(u8, arg, "-f"))
@@ -66,132 +57,36 @@ pub fn run(
         }
     }
 
-    std.debug.print("Connecting to {s}...\n", .{config.nats_url});
-
-    // Connect to NATS
-    const client = nats.Client.connect(
-        allocator,
-        io,
-        config.nats_url,
-        .{ .name = "clawgate-audit" },
-    ) catch {
-        std.debug.print("Error: Failed to connect to NATS\n", .{});
-        return AuditError.ConnectionFailed;
-    };
-    defer client.deinit(allocator);
-
-    // Subscribe to audit events
-    const subject = if (config.filter) |f|
-        std.fmt.allocPrint(allocator, "clawgate.audit.{s}", .{f}) catch {
-            return AuditError.OutOfMemory;
-        }
-    else
-        "clawgate.audit.>";
-
-    defer if (config.filter != null) allocator.free(subject);
-
-    const sub = client.subscribe(allocator, subject) catch {
-        std.debug.print("Error: Failed to subscribe\n", .{});
-        return AuditError.SubscriptionFailed;
-    };
-    defer sub.deinit(allocator);
-
-    client.flush(allocator) catch {};
-
-    std.debug.print("Listening for audit events on {s}\n", .{subject});
-    std.debug.print("Press Ctrl+C to stop.\n\n", .{});
-
-    // Main loop - read and display events
-    while (true) {
-        const msg = sub.nextWithTimeout(allocator, 1000) catch |err| {
-            if (err == error.Cancelled) break;
-            continue;
-        };
-
-        if (msg) |m| {
-            defer m.deinit(allocator);
-
-            if (config.json_output) {
-                // Raw JSON output
-                std.debug.print("{s}\n", .{m.data});
-            } else {
-                // Parse and format nicely
-                displayAuditEvent(allocator, m.subject, m.data);
-            }
-        }
-    }
+    printAuditInfo();
 }
 
-/// Parses and displays an audit event.
-fn displayAuditEvent(
-    allocator: Allocator,
-    subject: []const u8,
-    data: []const u8,
-) void {
-    // Try to parse the JSON
-    const parsed = std.json.parseFromSlice(
-        struct {
-            timestamp: ?[]const u8 = null,
-            request_id: ?[]const u8 = null,
-            op: ?[]const u8 = null,
-            path: ?[]const u8 = null,
-            token_id: ?[]const u8 = null,
-            issuer: ?[]const u8 = null,
-            result: ?[]const u8 = null,
-            error_code: ?[]const u8 = null,
-            bytes: ?usize = null,
-        },
-        allocator,
-        data,
-        .{ .ignore_unknown_fields = true },
-    ) catch {
-        // Can't parse, just show raw
-        std.debug.print("[{s}] {s}\n", .{ subject, data });
-        return;
-    };
-    defer parsed.deinit();
-
-    const event = parsed.value;
-
-    // Format timestamp or use subject
-    const ts = event.timestamp orelse "unknown";
-
-    // Build output line
-    var buf: [512]u8 = undefined;
-    var writer = Io.Writer.fixed(&buf);
-
-    writer.print("[{s}] ", .{ts}) catch {};
-
-    if (event.op) |op| {
-        writer.print("{s} ", .{op}) catch {};
-    }
-
-    if (event.path) |path| {
-        writer.print("{s} ", .{path}) catch {};
-    }
-
-    if (event.result) |result| {
-        if (std.mem.eql(u8, result, "ok")) {
-            writer.writeAll("OK") catch {};
-        } else {
-            writer.print("FAILED", .{}) catch {};
-            if (event.error_code) |code| {
-                writer.print(" ({s})", .{code}) catch {};
-            }
-        }
-    }
-
-    if (event.bytes) |bytes| {
-        writer.print(" [{d} bytes]", .{bytes}) catch {};
-    }
-
-    if (event.token_id) |tid| {
-        // Show abbreviated token ID
-        const abbrev_len = @min(tid.len, 16);
-        writer.print(" token:{s}...", .{tid[0..abbrev_len]}) catch {};
-    }
-
-    std.debug.print("{s}\n", .{writer.buffered()});
+/// Prints information about audit logging.
+fn printAuditInfo() void {
+    const info =
+        \\Audit Log Information
+        \\
+        \\ClawGate audit events are logged locally by the resource daemon.
+        \\Events are written to stderr with the prefix "AUDIT:".
+        \\
+        \\To view audit logs on the resource machine:
+        \\
+        \\  # Run resource daemon and capture audit logs
+        \\  clawgate --mode resource 2>&1 | grep AUDIT
+        \\
+        \\  # Or redirect to a file for later analysis
+        \\  clawgate --mode resource 2>&1 | tee clawgate.log
+        \\
+        \\Audit log format:
+        \\  AUDIT: req=<id> op=<operation> path=<path> success=<true|false>
+        \\
+        \\Operations logged:
+        \\  - read:  File read requests
+        \\  - write: File write requests
+        \\  - list:  Directory listing requests
+        \\  - stat:  File/directory stat requests
+        \\
+    ;
+    std.debug.print("{s}", .{info});
 }
 
 /// Prints audit command usage.
@@ -199,20 +94,16 @@ fn printAuditUsage() void {
     const usage =
         \\Usage: clawgate audit [options]
         \\
-        \\Watch the audit log for file access events.
+        \\Display audit log information.
+        \\
+        \\In the E2E architecture, audit events are logged locally by the
+        \\resource daemon on the primary machine. This command provides
+        \\information about accessing those logs.
         \\
         \\Options:
-        \\  -n, --nats <url>      NATS server URL
-        \\                        (default: nats://localhost:4222)
-        \\  -j, --json            Output raw JSON events
-        \\  -f, --filter <type>   Filter by event type
-        \\                        (e.g., files.read, files.write)
+        \\  -j, --json            (reserved for future use)
+        \\  -f, --filter <type>   (reserved for future use)
         \\  -h, --help            Show this help
-        \\
-        \\Examples:
-        \\  clawgate audit
-        \\  clawgate audit --json
-        \\  clawgate audit --filter files.read
         \\
     ;
     std.debug.print("{s}", .{usage});
@@ -222,10 +113,6 @@ fn printAuditUsage() void {
 
 test "config defaults" {
     const config = AuditConfig{};
-    try std.testing.expectEqualStrings(
-        "nats://localhost:4222",
-        config.nats_url,
-    );
     try std.testing.expect(!config.json_output);
     try std.testing.expect(config.filter == null);
 }

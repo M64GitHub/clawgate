@@ -648,14 +648,26 @@ test "multiple capabilities with overlapping scopes uses first match" {
     defer token.deinit(allocator);
 
     // Read should be allowed (matches first cap)
-    try std.testing.expect(token.allows("files", "read", "/home/special/file"));
+    try std.testing.expect(token.allows(
+        "files",
+        "read",
+        "/home/special/file",
+    ));
 
-    // Write should ALSO be allowed - it doesn't match first cap, but
+    // Write should ALSO be allowed - doesn't match first cap, but
     // continues to second cap which allows write
-    try std.testing.expect(token.allows("files", "write", "/home/special/file"));
+    try std.testing.expect(token.allows(
+        "files",
+        "write",
+        "/home/special/file",
+    ));
 
-    // Write should NOT be allowed for /home/regular (only read in first cap)
-    try std.testing.expect(!token.allows("files", "write", "/home/regular/file"));
+    // Write NOT allowed for /home/regular (only read in first cap)
+    try std.testing.expect(!token.allows(
+        "files",
+        "write",
+        "/home/regular/file",
+    ));
 }
 
 test "allows with empty operation string returns false" {
@@ -749,14 +761,14 @@ test "parse rejects short signature" {
     const allocator = std.testing.allocator;
 
     // Valid header, valid payload (complete), but signature too short
-    // Payload: {"iss":"t","sub":"s","iat":1,"exp":9999999999,"jti":"x","cg":{"v":1,"cap":[]}}
+    // Payload: {"iss":"t","sub":"s","iat":1,"exp":..,"jti":"x","cg":{..}}
     const jwt = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9." ++
-        "eyJpc3MiOiJ0Iiwic3ViIjoicyIsImlhdCI6MSwiZXhwIjo5OTk5OTk5OTk5LCJqdGkiOiJ4IiwiY2ciOnsi" ++
-        "diI6MSwiY2FwIjpbXX19." ++
+        "eyJpc3MiOiJ0Iiwic3ViIjoicyIsImlhdCI6MSwiZXhwIjo5OTk5OTk5" ++
+        "OTk5LCJqdGkiOiJ4IiwiY2ciOnsidiI6MSwiY2FwIjpbXX19." ++
         "AAAA";
 
     const result = Token.parse(allocator, jwt);
-    // Short signature is rejected with InvalidSignature (length != 64)
+    // Short signature rejected with InvalidSignature (length != 64)
     try std.testing.expectError(TokenError.InvalidSignature, result);
 }
 
@@ -766,7 +778,8 @@ test "parse rejects wrong signature length" {
     // Valid header, valid payload, but signature decodes to wrong length
     // "AAAA" decodes to 3 bytes, not 64
     const jwt = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9." ++
-        "eyJpc3MiOiJ0ZXN0IiwiaWF0IjoxLCJleHAiOjIsImp0aSI6IngiLCJzdWIiOiJ5IiwiY2ciOnsiY2FwIjpbXSwidCI6MX19." ++
+        "eyJpc3MiOiJ0ZXN0IiwiaWF0IjoxLCJleHAiOjIsImp0aSI6IngiLCJz" ++
+        "dWIiOiJ5IiwiY2ciOnsiY2FwIjpbXSwidCI6MX19." ++
         "AAAA";
 
     const result = Token.parse(allocator, jwt);
@@ -802,7 +815,8 @@ test "parse rejects non-EdDSA algorithm" {
     // {"alg":"HS256","typ":"JWT"} base64url encoded
     const jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." ++
         "eyJpc3MiOiJ0ZXN0In0." ++
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" ++
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     const result = Token.parse(allocator, jwt);
     try std.testing.expectError(TokenError.InvalidAlgorithm, result);

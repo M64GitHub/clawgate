@@ -144,13 +144,14 @@ pub fn grant(
     defer if (config.secret_key_path == null) allocator.free(key_path);
 
     // Load secret key
-    const secret_key = crypto.loadSecretKey(io, key_path) catch {
+    var secret_key = crypto.loadSecretKey(io, key_path) catch {
         std.debug.print("Error: Failed to load secret key from {s}\n", .{
             key_path,
         });
         std.debug.print("Run 'clawgate keygen' first.\n", .{});
         return GrantError.KeyLoadFailed;
     };
+    defer std.crypto.secureZero(u8, &secret_key);
 
     // Build operations list
     var ops_buf: [4][]const u8 = undefined;

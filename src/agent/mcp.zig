@@ -3,21 +3,18 @@
 //! Implements JSON-RPC 2.0 over stdio with the following methods:
 //! - initialize: Return server capabilities
 //! - tools/list: List available tools
-//! - tools/call: Execute a tool (file operation via NATS)
+//! - tools/call: Execute a tool (file operation via E2E connection)
 
 const std = @import("std");
-const nats = @import("nats");
+const ipc_client = @import("ipc_client.zig");
 const tokens = @import("tokens.zig");
 const paths = @import("../path.zig");
 const protocol = @import("../protocol/json.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
-const Dir = std.Io.Dir;
 const File = std.Io.File;
 
-const DEFAULT_NATS_URL = "nats://localhost:4222";
 const DEFAULT_TOKEN_DIR = "~/.clawgate/tokens";
-const NATS_REQUEST_TIMEOUT_MS: u32 = 30000;
 
 /// MCP error codes (JSON-RPC 2.0 compliant).
 pub const McpError = struct {
@@ -31,15 +28,15 @@ pub const McpError = struct {
     pub const NO_TOKEN: i32 = -32001;
     pub const TOKEN_EXPIRED: i32 = -32002;
     pub const SCOPE_VIOLATION: i32 = -32003;
-    pub const NATS_TIMEOUT: i32 = -32004;
-    pub const NATS_ERROR: i32 = -32005;
+    pub const CONN_TIMEOUT: i32 = -32004;
+    pub const CONN_ERROR: i32 = -32005;
+    pub const NOT_CONNECTED: i32 = -32006;
     pub const FILE_NOT_FOUND: i32 = -32010;
     pub const ACCESS_DENIED: i32 = -32011;
 };
 
 /// MCP server configuration.
 pub const Config = struct {
-    nats_url: []const u8 = DEFAULT_NATS_URL,
     token_dir: []const u8 = DEFAULT_TOKEN_DIR,
     environ: std.process.Environ = .empty,
 };
@@ -52,7 +49,6 @@ pub fn run(allocator: Allocator, config: Config) !void {
     });
     defer threaded.deinit();
 
-    // Get HOME from environment via Threaded's environString
     const home = threaded.environString("HOME") orelse "/tmp";
 
     try runWithIo(allocator, threaded.io(), config, home);
@@ -65,11 +61,10 @@ fn runWithIo(
     config: Config,
     home: []const u8,
 ) !void {
-    // Expand token directory path
+    const environ = config.environ;
     const token_dir = try paths.expand(allocator, config.token_dir, home);
     defer allocator.free(token_dir);
 
-    // Load token store
     var store = tokens.TokenStore.loadFromDir(
         allocator,
         io,
@@ -83,22 +78,6 @@ fn runWithIo(
     };
     defer store.deinit(allocator);
 
-    // Connect to NATS
-    const client = nats.Client.connect(
-        allocator,
-        io,
-        config.nats_url,
-        .{ .name = "clawgate-mcp" },
-    ) catch {
-        std.log.err("Failed to connect to NATS server", .{});
-        const stderr = File.stderr();
-        const msg = "Error: NATS connection failed\n";
-        stderr.writeStreamingAll(io, msg) catch {};
-        return;
-    };
-    defer client.deinit(allocator);
-
-    // Main JSON-RPC loop using File handles
     const stdin = File.stdin();
     const stdout = File.stdout();
 
@@ -110,7 +89,6 @@ fn runWithIo(
     const out = &writer.interface;
 
     while (true) {
-        // Read a line from stdin
         const line = readLine(&reader.interface) catch |err| {
             if (err == error.EndOfStream) break;
             continue;
@@ -120,10 +98,9 @@ fn runWithIo(
 
         const response = handleRequest(
             allocator,
-            io,
+            environ,
             line,
             &store,
-            client,
         ) catch |err| {
             const error_response = formatError(
                 allocator,
@@ -147,7 +124,6 @@ fn runWithIo(
 
 /// Reads a line from the reader interface.
 fn readLine(reader: *Io.Reader) ![]const u8 {
-    // Fill buffer and look for newline
     const data = try reader.peekGreedy(1);
     if (data.len == 0) return error.EndOfStream;
 
@@ -158,7 +134,6 @@ fn readLine(reader: *Io.Reader) ![]const u8 {
         return line;
     }
 
-    // No newline found, return what we have
     const line = data;
     reader.tossBuffered();
     return line;
@@ -167,12 +142,10 @@ fn readLine(reader: *Io.Reader) ![]const u8 {
 /// Handles a single JSON-RPC request.
 fn handleRequest(
     allocator: Allocator,
-    io: Io,
+    environ: std.process.Environ,
     line: []const u8,
     store: *tokens.TokenStore,
-    client: *nats.Client,
 ) ![]const u8 {
-    // Parse JSON-RPC request
     const parsed = std.json.parseFromSlice(
         struct {
             jsonrpc: []const u8 = "2.0",
@@ -195,22 +168,13 @@ fn handleRequest(
 
     const req = parsed.value;
 
-    // Dispatch based on method
     if (std.mem.eql(u8, req.method, "initialize")) {
         return handleInitialize(allocator, req.id);
     } else if (std.mem.eql(u8, req.method, "tools/list")) {
         return handleToolsList(allocator, req.id);
     } else if (std.mem.eql(u8, req.method, "tools/call")) {
-        return handleToolsCall(
-            allocator,
-            io,
-            req.id,
-            req.params,
-            store,
-            client,
-        );
+        return handleToolsCall(allocator, environ, req.id, req.params, store);
     } else if (std.mem.eql(u8, req.method, "notifications/initialized")) {
-        // This is a notification, no response needed
         return allocator.dupe(u8, "");
     } else {
         return formatError(
@@ -231,7 +195,7 @@ fn handleInitialize(allocator: Allocator, id: ?std.json.Value) ![]const u8 {
     try writer.writeAll("{\"jsonrpc\":\"2.0\",");
     try writeId(writer, id);
     try writer.writeAll(",\"result\":{");
-    try writer.writeAll("\"protocolVersion\":\"2026-11-05\",");
+    try writer.writeAll("\"protocolVersion\":\"2024-11-05\",");
     try writer.writeAll("\"capabilities\":{\"tools\":{}},");
     try writer.writeAll("\"serverInfo\":{");
     try writer.writeAll("\"name\":\"clawgate\",");
@@ -311,11 +275,10 @@ fn handleToolsList(allocator: Allocator, id: ?std.json.Value) ![]const u8 {
 /// Handles 'tools/call' method.
 fn handleToolsCall(
     allocator: Allocator,
-    io: Io,
+    environ: std.process.Environ,
     id: ?std.json.Value,
     params: ?std.json.Value,
     store: *tokens.TokenStore,
-    client: *nats.Client,
 ) ![]const u8 {
     const p = params orelse {
         return formatError(
@@ -336,7 +299,6 @@ fn handleToolsCall(
         ),
     };
 
-    // Get tool name
     const name_val = params_obj.get("name") orelse {
         return formatError(
             allocator,
@@ -355,7 +317,6 @@ fn handleToolsCall(
         ),
     };
 
-    // Get arguments
     const args_val = params_obj.get("arguments") orelse {
         return formatError(
             allocator,
@@ -374,7 +335,6 @@ fn handleToolsCall(
         ),
     };
 
-    // Get path (required for all tools)
     const path_val = args.get("path") orelse {
         return formatError(
             allocator,
@@ -393,9 +353,8 @@ fn handleToolsCall(
         ),
     };
 
-    // Dispatch based on tool name
     if (std.mem.eql(u8, name, "clawgate_read_file")) {
-        return executeReadFile(allocator, io, id, path, store, client);
+        return executeReadFile(allocator, environ, id, path, store);
     } else if (std.mem.eql(u8, name, "clawgate_write_file")) {
         const content_val = args.get("content") orelse {
             return formatError(
@@ -414,19 +373,11 @@ fn handleToolsCall(
                 "content must be string",
             ),
         };
-        return executeWriteFile(
-            allocator,
-            io,
-            id,
-            path,
-            content,
-            store,
-            client,
-        );
+        return executeWriteFile(allocator, environ, id, path, content, store);
     } else if (std.mem.eql(u8, name, "clawgate_list_directory")) {
-        return executeListDirectory(allocator, io, id, path, store, client);
+        return executeListDirectory(allocator, environ, id, path, store);
     } else if (std.mem.eql(u8, name, "clawgate_stat")) {
-        return executeStat(allocator, io, id, path, store, client);
+        return executeStat(allocator, environ, id, path, store);
     } else {
         return formatError(
             allocator,
@@ -440,13 +391,11 @@ fn handleToolsCall(
 /// Executes clawgate_read_file tool.
 fn executeReadFile(
     allocator: Allocator,
-    io: Io,
+    environ: std.process.Environ,
     id: ?std.json.Value,
     path: []const u8,
     store: *tokens.TokenStore,
-    client: *nats.Client,
 ) ![]const u8 {
-    // Find token for path
     const tok = store.findForPath("files", "read", path) orelse {
         return formatError(
             allocator,
@@ -456,17 +405,15 @@ fn executeReadFile(
         );
     };
 
-    // Send NATS request
-    const response = sendNatsRequest(
+    const response = sendRequest(
         allocator,
-        io,
-        client,
+        environ,
         "read",
         path,
         tok.raw,
         null,
     ) catch |err| {
-        return mapNatsError(allocator, id, err);
+        return mapConnectionError(allocator, id, err);
     };
     defer {
         if (response.result) |r| {
@@ -494,7 +441,6 @@ fn executeReadFile(
         );
     }
 
-    // Format MCP success response with content
     const result = response.result orelse {
         return formatError(allocator, id, McpError.INTERNAL_ERROR, "No result");
     };
@@ -515,14 +461,12 @@ fn executeReadFile(
 /// Executes clawgate_write_file tool.
 fn executeWriteFile(
     allocator: Allocator,
-    io: Io,
+    environ: std.process.Environ,
     id: ?std.json.Value,
     path: []const u8,
     content: []const u8,
     store: *tokens.TokenStore,
-    client: *nats.Client,
 ) ![]const u8 {
-    // Find token for path
     const tok = store.findForPath("files", "write", path) orelse {
         return formatError(
             allocator,
@@ -532,17 +476,15 @@ fn executeWriteFile(
         );
     };
 
-    // Send NATS request
-    const response = sendNatsRequest(
+    const response = sendRequest(
         allocator,
-        io,
-        client,
+        environ,
         "write",
         path,
         tok.raw,
         content,
     ) catch |err| {
-        return mapNatsError(allocator, id, err);
+        return mapConnectionError(allocator, id, err);
     };
 
     if (!response.ok) {
@@ -589,13 +531,11 @@ fn executeWriteFile(
 /// Executes clawgate_list_directory tool.
 fn executeListDirectory(
     allocator: Allocator,
-    io: Io,
+    environ: std.process.Environ,
     id: ?std.json.Value,
     path: []const u8,
     store: *tokens.TokenStore,
-    client: *nats.Client,
 ) ![]const u8 {
-    // Find token for path
     const tok = store.findForPath("files", "list", path) orelse {
         return formatError(
             allocator,
@@ -605,17 +545,15 @@ fn executeListDirectory(
         );
     };
 
-    // Send NATS request
-    const response = sendNatsRequest(
+    const response = sendRequest(
         allocator,
-        io,
-        client,
+        environ,
         "list",
         path,
         tok.raw,
         null,
     ) catch |err| {
-        return mapNatsError(allocator, id, err);
+        return mapConnectionError(allocator, id, err);
     };
     defer {
         if (response.result) |r| {
@@ -662,7 +600,6 @@ fn executeListDirectory(
         ),
     };
 
-    // Format entries as text
     var output: std.Io.Writer.Allocating = .init(allocator);
     errdefer output.deinit();
     const writer = &output.writer;
@@ -686,13 +623,11 @@ fn executeListDirectory(
 /// Executes clawgate_stat tool.
 fn executeStat(
     allocator: Allocator,
-    io: Io,
+    environ: std.process.Environ,
     id: ?std.json.Value,
     path: []const u8,
     store: *tokens.TokenStore,
-    client: *nats.Client,
 ) ![]const u8 {
-    // Find token for path
     const tok = store.findForPath("files", "stat", path) orelse {
         return formatError(
             allocator,
@@ -702,17 +637,15 @@ fn executeStat(
         );
     };
 
-    // Send NATS request
-    const response = sendNatsRequest(
+    const response = sendRequest(
         allocator,
-        io,
-        client,
+        environ,
         "stat",
         path,
         tok.raw,
         null,
     ) catch |err| {
-        return mapNatsError(allocator, id, err);
+        return mapConnectionError(allocator, id, err);
     };
     defer {
         if (response.result) |r| {
@@ -754,7 +687,6 @@ fn executeStat(
         ),
     };
 
-    // Format stat as text
     var buf: [256]u8 = undefined;
     const fmt = "exists: {}\ntype: {s}\nsize: {d}\nmodified: {s}";
     const text = std.fmt.bufPrint(&buf, fmt, .{
@@ -767,20 +699,19 @@ fn executeStat(
     return formatToolResult(allocator, id, text);
 }
 
-/// Sends a NATS request and parses the response.
-fn sendNatsRequest(
+/// Sends a request via IPC to the agent daemon and parses the response.
+fn sendRequest(
     allocator: Allocator,
-    io: Io,
-    client: *nats.Client,
+    environ: std.process.Environ,
     op: []const u8,
     path: []const u8,
     token_raw: []const u8,
     content: ?[]const u8,
 ) !protocol.Response {
     // Generate request ID
-    var id_bytes: [8]u8 = undefined;
-    io.random(&id_bytes);
-    const hex = std.fmt.bytesToHex(id_bytes, .lower);
+    var id_buf: [16]u8 = undefined;
+    @memset(&id_buf, 'a');
+    const id_str = &id_buf;
 
     // Build request JSON
     var request_json: std.Io.Writer.Allocating = .init(allocator);
@@ -788,7 +719,7 @@ fn sendNatsRequest(
     const pw = &request_json.writer;
 
     try pw.writeAll("{\"id\":\"");
-    try pw.writeAll(&hex);
+    try pw.writeAll(id_str);
     try pw.writeAll("\",\"token\":\"");
     try writeJsonEscaped(pw, token_raw);
     try pw.writeAll("\",\"op\":\"");
@@ -805,40 +736,27 @@ fn sendNatsRequest(
 
     try pw.writeAll("}}");
 
-    // Construct NATS subject
-    var subject_buf: [64]u8 = undefined;
-    const subject = std.fmt.bufPrint(
-        &subject_buf,
-        "clawgate.req.files.{s}",
-        .{op},
-    ) catch unreachable;
-
-    // Send request
-    const reply = client.request(
+    // Send request via IPC to agent daemon
+    const response_data = ipc_client.sendRequest(
         allocator,
-        subject,
+        environ,
         request_json.written(),
-        NATS_REQUEST_TIMEOUT_MS,
-    ) catch {
-        return error.NatsConnectionError;
+    ) catch |err| {
+        return switch (err) {
+            ipc_client.IpcError.DaemonNotRunning => error.NotConnected,
+            ipc_client.IpcError.ConnectionFailed => error.ConnectionClosed,
+            ipc_client.IpcError.OutOfMemory => error.OutOfMemory,
+            else => error.ConnectionError,
+        };
     };
+    defer allocator.free(response_data);
 
-    if (reply) |msg| {
-        defer msg.deinit(allocator);
-
-        // Parse response
-        return parseNatsResponse(allocator, msg.data);
-    } else {
-        return error.NatsTimeout;
-    }
+    // Parse response
+    return parseResponse(allocator, response_data);
 }
 
-/// Parses a NATS response JSON into protocol.Response.
-fn parseNatsResponse(
-    allocator: Allocator,
-    data: []const u8,
-) !protocol.Response {
-    // First parse to get id, ok, and check for error
+/// Parses response JSON into protocol.Response.
+fn parseResponse(allocator: Allocator, data: []const u8) !protocol.Response {
     const parsed = std.json.parseFromSlice(
         struct {
             id: []const u8,
@@ -870,19 +788,13 @@ fn parseNatsResponse(
                 .err = .{ .code = code, .message = message },
             };
         }
-        return protocol.Response{
-            .id = "",
-            .ok = false,
-        };
+        return protocol.Response{ .id = "", .ok = false };
     }
 
-    // Parse the result based on what fields are present
     if (resp.result) |result_val| {
         switch (result_val) {
             .object => |obj| {
-                // Determine result type by fields present
                 if (obj.get("content") != null) {
-                    // Read result - decode base64 content
                     const encoded = switch (obj.get("content").?) {
                         .string => |s| s,
                         else => return error.InvalidResponse,
@@ -922,7 +834,6 @@ fn parseNatsResponse(
                         },
                     };
                 } else if (obj.get("bytes_written") != null) {
-                    // Write result
                     const bw_val = obj.get("bytes_written").?;
                     const bytes_written: usize = switch (bw_val) {
                         .integer => |i| @intCast(i),
@@ -931,19 +842,15 @@ fn parseNatsResponse(
                     return protocol.Response{
                         .id = "",
                         .ok = true,
-                        .result = .{
-                            .write = .{ .bytes_written = bytes_written },
-                        },
+                        .result = .{ .write = .{ .bytes_written = bytes_written } },
                     };
                 } else if (obj.get("entries") != null) {
-                    // List result
                     const entries_val = obj.get("entries").?;
                     const entries_arr = switch (entries_val) {
                         .array => |a| a,
                         else => return error.InvalidResponse,
                     };
-                    var entries: std.ArrayListUnmanaged(protocol.Entry) =
-                        .empty;
+                    var entries: std.ArrayListUnmanaged(protocol.Entry) = .empty;
                     errdefer {
                         for (entries.items) |e| allocator.free(e.name);
                         entries.deinit(allocator);
@@ -987,13 +894,10 @@ fn parseNatsResponse(
                         .id = "",
                         .ok = true,
                         .result = .{
-                            .list = .{
-                                .entries = try entries.toOwnedSlice(allocator),
-                            },
+                            .list = .{ .entries = try entries.toOwnedSlice(allocator) },
                         },
                     };
                 } else if (obj.get("exists") != null) {
-                    // Stat result
                     const exists = switch (obj.get("exists").?) {
                         .bool => |b| b,
                         else => return error.InvalidResponse,
@@ -1077,7 +981,7 @@ fn writeId(writer: anytype, id: ?std.json.Value) !void {
 }
 
 /// Formats a JSON-RPC error response.
-fn formatError(
+pub fn formatError(
     allocator: Allocator,
     id: ?std.json.Value,
     code: i32,
@@ -1102,7 +1006,7 @@ fn formatError(
 }
 
 /// Formats a successful tool call result.
-fn formatToolResult(
+pub fn formatToolResult(
     allocator: Allocator,
     id: ?std.json.Value,
     text: []const u8,
@@ -1125,24 +1029,24 @@ fn formatToolResult(
     return owned;
 }
 
-/// Maps NATS errors to MCP error responses.
-fn mapNatsError(
+/// Maps connection errors to MCP error responses.
+fn mapConnectionError(
     allocator: Allocator,
     id: ?std.json.Value,
     err: anyerror,
 ) ![]const u8 {
     return switch (err) {
-        error.NatsTimeout => formatError(
+        error.NotConnected => formatError(
             allocator,
             id,
-            McpError.NATS_TIMEOUT,
-            "Request timeout",
+            McpError.NOT_CONNECTED,
+            "Not connected to resource daemon",
         ),
-        error.NatsConnectionError => formatError(
+        error.ConnectionClosed => formatError(
             allocator,
             id,
-            McpError.NATS_ERROR,
-            "Connection error",
+            McpError.CONN_ERROR,
+            "Connection closed",
         ),
         else => formatError(
             allocator,
@@ -1155,11 +1059,11 @@ fn mapNatsError(
 
 /// Maps protocol error codes to MCP error codes.
 fn mapProtocolError(code: []const u8) i32 {
-    if (std.mem.eql(u8, code, "FILE_NOT_FOUND")) return McpError.FILE_NOT_FOUND;
+    const not_found = std.mem.eql(u8, code, "FILE_NOT_FOUND");
+    if (not_found) return McpError.FILE_NOT_FOUND;
     if (std.mem.eql(u8, code, "ACCESS_DENIED")) return McpError.ACCESS_DENIED;
-    if (std.mem.eql(u8, code, "SCOPE_VIOLATION")) {
-        return McpError.SCOPE_VIOLATION;
-    }
+    const scope_viol = std.mem.eql(u8, code, "SCOPE_VIOLATION");
+    if (scope_viol) return McpError.SCOPE_VIOLATION;
     if (std.mem.eql(u8, code, "INVALID_TOKEN")) return McpError.NO_TOKEN;
     if (std.mem.eql(u8, code, "TOKEN_EXPIRED")) return McpError.TOKEN_EXPIRED;
     return McpError.INTERNAL_ERROR;

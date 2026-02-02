@@ -1,7 +1,8 @@
 //! ClawGate - Secure file access for isolated AI agents
 //!
 //! A capability-based, auditable bridge that enables isolated AI agents
-//! to access files on a user's primary machine through NATS messaging.
+//! to access files on a user's primary machine through direct TCP with
+//! end-to-end encryption.
 
 const std = @import("std");
 const resource_daemon = @import("resource/daemon.zig");
@@ -67,19 +68,43 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, cmd, "cat")) {
-        file_cmds.cat(allocator, io, cmd_args, home) catch {
+        file_cmds.cat(
+            allocator,
+            io,
+            cmd_args,
+            home,
+            init.minimal.environ,
+        ) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, cmd, "ls")) {
-        file_cmds.ls(allocator, io, cmd_args, home) catch {
+        file_cmds.ls(
+            allocator,
+            io,
+            cmd_args,
+            home,
+            init.minimal.environ,
+        ) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, cmd, "write")) {
-        file_cmds.write(allocator, io, cmd_args, home) catch {
+        file_cmds.write(
+            allocator,
+            io,
+            cmd_args,
+            home,
+            init.minimal.environ,
+        ) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, cmd, "stat")) {
-        file_cmds.stat(allocator, io, cmd_args, home) catch {
+        file_cmds.stat(
+            allocator,
+            io,
+            cmd_args,
+            home,
+            init.minimal.environ,
+        ) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, cmd, "keygen")) {
@@ -125,7 +150,9 @@ fn handleModeCommand(
 
     if (std.mem.eql(u8, mode, "resource")) {
         var public_key_path: []const u8 = "~/.clawgate/keys/public.key";
-        var nats_url: []const u8 = "nats://localhost:4222";
+        var connect_addr: []const u8 = "localhost";
+        var connect_port: u16 = 4223;
+        var resource_id: []const u8 = "clawgate-resource";
 
         var i: usize = 0;
         while (i < remaining_args.len) : (i += 1) {
@@ -134,15 +161,30 @@ fn handleModeCommand(
             if (std.mem.eql(u8, arg, "--public-key") and has_next) {
                 i += 1;
                 public_key_path = remaining_args[i];
-            } else if (std.mem.eql(u8, arg, "--nats") and has_next) {
+            } else if (std.mem.eql(u8, arg, "--connect") and has_next) {
                 i += 1;
-                nats_url = remaining_args[i];
+                const addr_port = remaining_args[i];
+                if (std.mem.lastIndexOfScalar(u8, addr_port, ':')) |idx| {
+                    connect_addr = addr_port[0..idx];
+                    connect_port = std.fmt.parseInt(
+                        u16,
+                        addr_port[idx + 1 ..],
+                        10,
+                    ) catch 4223;
+                } else {
+                    connect_addr = addr_port;
+                }
+            } else if (std.mem.eql(u8, arg, "--resource-id") and has_next) {
+                i += 1;
+                resource_id = remaining_args[i];
             }
         }
 
         resource_daemon.run(allocator, .{
-            .nats_url = nats_url,
+            .connect_addr = connect_addr,
+            .connect_port = connect_port,
             .public_key_path = public_key_path,
+            .resource_id = resource_id,
             .environ = environ,
         }) catch |err| {
             std.debug.print("Resource daemon error: {}\n", .{err});
@@ -150,7 +192,8 @@ fn handleModeCommand(
         };
     } else if (std.mem.eql(u8, mode, "agent")) {
         var token_dir: []const u8 = "~/.clawgate/tokens";
-        var nats_url: []const u8 = "nats://localhost:4222";
+        var listen_addr: []const u8 = "0.0.0.0";
+        var listen_port: u16 = 4223;
 
         var i: usize = 0;
         while (i < remaining_args.len) : (i += 1) {
@@ -159,14 +202,23 @@ fn handleModeCommand(
             if (std.mem.eql(u8, arg, "--token-dir") and has_next) {
                 i += 1;
                 token_dir = remaining_args[i];
-            } else if (std.mem.eql(u8, arg, "--nats") and has_next) {
+            } else if (std.mem.eql(u8, arg, "--listen") and has_next) {
                 i += 1;
-                nats_url = remaining_args[i];
+                const addr_port = remaining_args[i];
+                if (std.mem.lastIndexOfScalar(u8, addr_port, ':')) |idx| {
+                    listen_addr = addr_port[0..idx];
+                    listen_port = std.fmt.parseInt(
+                        u16,
+                        addr_port[idx + 1 ..],
+                        10,
+                    ) catch 4223;
+                }
             }
         }
 
         agent_daemon.run(allocator, .{
-            .nats_url = nats_url,
+            .listen_addr = listen_addr,
+            .listen_port = listen_port,
             .token_dir = token_dir,
             .environ = environ,
         }) catch |err| {
@@ -185,7 +237,6 @@ fn handleMcpServer(
     environ: std.process.Environ,
 ) !void {
     var token_dir: []const u8 = "~/.clawgate/tokens";
-    var nats_url: []const u8 = "nats://localhost:4222";
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -194,14 +245,10 @@ fn handleMcpServer(
         if (std.mem.eql(u8, arg, "--token-dir") and has_next) {
             i += 1;
             token_dir = args[i];
-        } else if (std.mem.eql(u8, arg, "--nats") and has_next) {
-            i += 1;
-            nats_url = args[i];
         }
     }
 
     mcp.run(allocator, .{
-        .nats_url = nats_url,
         .token_dir = token_dir,
         .environ = environ,
     }) catch |err| {
@@ -221,7 +268,8 @@ fn printUsage() void {
         \\ClawGate - Secure file access for isolated AI agents
         \\
         \\Usage:
-        \\  clawgate --mode <resource|agent>  Run daemon
+        \\  clawgate --mode agent             Run agent daemon (listens for connections)
+        \\  clawgate --mode resource          Run resource daemon (connects to agent)
         \\  clawgate mcp-server               Run MCP server (stdio)
         \\
         \\Capability Management (primary machine):
@@ -246,8 +294,13 @@ fn printUsage() void {
         \\  clawgate audit                    Watch audit log
         \\  clawgate audit --json             Output as JSON
         \\
-        \\Options:
-        \\  --nats <url>                      NATS server URL
+        \\Daemon Options:
+        \\  --listen <addr:port>              Listen address (agent mode, default 0.0.0.0:4223)
+        \\  --connect <host:port>             Connect address (resource mode)
+        \\  --public-key <path>               Public key path (resource mode)
+        \\  --token-dir <path>                Token directory (agent mode)
+        \\
+        \\General Options:
         \\  --help, -h                        Show this help
         \\  --version, -v                     Show version
         \\
@@ -266,14 +319,19 @@ test {
     // Reference modules to include their tests
     _ = @import("capability/scope.zig");
     _ = @import("capability/crypto.zig");
+    _ = @import("capability/e2e.zig");
     _ = @import("capability/token.zig");
+    _ = @import("transport/tcp.zig");
+    _ = @import("transport/unix.zig");
     _ = @import("protocol/json.zig");
+    _ = @import("protocol/handshake.zig");
     _ = @import("resource/files.zig");
     _ = @import("resource/handlers.zig");
     _ = @import("resource/daemon.zig");
     _ = @import("agent/tokens.zig");
     _ = @import("agent/daemon.zig");
     _ = @import("agent/mcp.zig");
+    _ = @import("agent/ipc_client.zig");
     _ = @import("cli/setup.zig");
     _ = @import("cli/grant.zig");
     _ = @import("cli/token.zig");

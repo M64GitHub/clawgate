@@ -1,4 +1,4 @@
-//! JSON protocol types for ClawGate NATS messages.
+//! JSON protocol types for ClawGate E2E messages.
 //!
 //! Defines request and response structures for file operations
 //! between agent and resource daemons.

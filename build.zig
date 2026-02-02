@@ -12,28 +12,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Build options for nats.zig
-    const enable_debug = b.option(
-        bool,
-        "EnableDebug",
-        "Enable debug prints for NATS (default: false)",
-    ) orelse false;
-
-    const build_options = b.addOptions();
-    build_options.addOption(bool, "enable_debug", enable_debug);
-
-    // nats.zig module
-    const nats = b.addModule("nats", .{
-        .root_source_file = b.path("src/nats/nats.zig"),
-        .target = target,
-        .imports = &.{
-            .{
-                .name = "build_options",
-                .module = build_options.createModule(),
-            },
-        },
-    });
-
     // ClawGate executable
     const exe = b.addExecutable(.{
         .name = "clawgate",
@@ -41,9 +19,6 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "nats", .module = nats },
-            },
         }),
     });
     b.installArtifact(exe);
@@ -60,9 +35,6 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "nats", .module = nats },
-            },
         }),
     });
     const run_tests = b.addRunArtifact(unit_tests);

@@ -470,9 +470,10 @@ test "loadFromDir - skips non-token files" {
     const io = threaded.io();
 
     const test_dir = "/tmp/clawgate_test_non_token";
+    const other_file = test_dir ++ "/other.txt";
     Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
     defer {
-        Dir.deleteFile(.cwd(), io, "/tmp/clawgate_test_non_token/other.txt") catch {};
+        Dir.deleteFile(.cwd(), io, other_file) catch {};
         Dir.deleteDir(.cwd(), io, test_dir) catch {};
     }
 
@@ -496,9 +497,10 @@ test "loadFromDir - skips invalid token files" {
     const io = threaded.io();
 
     const test_dir = "/tmp/clawgate_test_invalid_token";
+    const bad_file = test_dir ++ "/bad.token";
     Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
     defer {
-        Dir.deleteFile(.cwd(), io, "/tmp/clawgate_test_invalid_token/bad.token") catch {};
+        Dir.deleteFile(.cwd(), io, bad_file) catch {};
         Dir.deleteDir(.cwd(), io, test_dir) catch {};
     }
 
@@ -522,9 +524,10 @@ test "loadFromDir - skips empty token files" {
     const io = threaded.io();
 
     const test_dir = "/tmp/clawgate_test_empty_token";
+    const empty_file = test_dir ++ "/empty.token";
     Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
     defer {
-        Dir.deleteFile(.cwd(), io, "/tmp/clawgate_test_empty_token/empty.token") catch {};
+        Dir.deleteFile(.cwd(), io, empty_file) catch {};
         Dir.deleteDir(.cwd(), io, test_dir) catch {};
     }
 
@@ -589,10 +592,11 @@ test "list returns all tokens" {
 
     // Use unique directory name to avoid test pollution
     const test_dir = "/tmp/clawgate_test_list_tokens";
-    // Clean up any leftover files from previous runs
-    Dir.deleteDir(.cwd(), io, test_dir) catch {};
+
+    // Clean up leftover files from previous runs
+    cleanupTestDir(io, test_dir);
     Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
-    defer Dir.deleteDir(.cwd(), io, test_dir) catch {};
+    defer cleanupTestDir(io, test_dir);
 
     var store = try TokenStore.loadFromDir(allocator, io, test_dir);
     defer store.deinit(allocator);
@@ -621,4 +625,26 @@ test "list returns all tokens" {
 
     // Now should have 1
     try std.testing.expectEqual(@as(usize, 1), store.list().len);
+}
+
+fn cleanupTestDir(io: std.Io, dir_path: []const u8) void {
+    const dir = Dir.openDir(
+        .cwd(),
+        io,
+        dir_path,
+        .{ .iterate = true },
+    ) catch return;
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (iter.next(io) catch null) |entry| {
+        const file_path = std.fs.path.join(
+            std.testing.allocator,
+            &.{ dir_path, entry.name },
+        ) catch continue;
+        defer std.testing.allocator.free(file_path);
+        Dir.deleteFile(.cwd(), io, file_path) catch {};
+    }
+
+    Dir.deleteDir(.cwd(), io, dir_path) catch {};
 }

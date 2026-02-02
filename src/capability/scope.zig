@@ -409,3 +409,80 @@ test "single level wildcard edge cases" {
     // File that is just the parent
     try std.testing.expect(!matches("/tmp/*", "/tmp"));
 }
+
+// Bug-finding negative tests - designed to catch implementation bugs
+
+test "canonicalizePath rejects percent-encoded traversal" {
+    // Paths should already be decoded before reaching us, but verify
+    // that literal %2e%2e doesn't magically become ..
+    const allocator = std.testing.allocator;
+
+    // These are literal strings, not URL-encoded
+    // If implementation ever decodes URLs, this would be a vulnerability
+    const p1 = canonicalizePath(allocator, "/home/user/%2e%2e/passwd");
+    if (p1) |path| {
+        // Should NOT have decoded %2e%2e to ..
+        try std.testing.expect(std.mem.indexOf(u8, path, "..") == null);
+        allocator.free(path);
+    }
+
+    // Null byte injection attempt (literal string)
+    const p2 = canonicalizePath(allocator, "/home/user/\x00/../passwd");
+    // Should either be null or not contain traversal
+    if (p2) |path| {
+        defer allocator.free(path);
+        try std.testing.expect(std.mem.indexOf(u8, path, "passwd") == null or
+            std.mem.indexOf(u8, path, "..") == null);
+    }
+}
+
+test "matches rejects path component boundary attacks" {
+    // These patterns should NOT allow escaping to sibling directories
+
+    // Pattern: /home/user/** (user has access to their home)
+    // Attack: access /home/useradmin or /home/user../admin
+    try std.testing.expect(!matches("/home/user/**", "/home/useradmin/file"));
+    try std.testing.expect(!matches("/home/user/**", "/home/user-admin/file"));
+    try std.testing.expect(!matches("/home/user/**", "/home/user_admin/file"));
+
+    // Empty component attack (shouldn't match)
+    try std.testing.expect(!matches("/home/user/**", "/home//user/file"));
+}
+
+test "isWithin handles edge case paths" {
+    // Empty base matches all paths (empty string is prefix of all)
+    // This documents the current behavior
+    try std.testing.expect(isWithin("", "/home/user/file"));
+
+    // Empty path
+    try std.testing.expect(!isWithin("/home", ""));
+
+    // Root as base
+    try std.testing.expect(isWithin("/", "/anything"));
+    try std.testing.expect(isWithin("/", "/"));
+
+    // Identical paths
+    try std.testing.expect(isWithin("/home/user", "/home/user"));
+}
+
+test "canonicalizePath with maximum nesting" {
+    const allocator = std.testing.allocator;
+
+    // Deeply nested path with many .. reduces to root
+    // /a/b/c/d/e/f/g + 7 x ".." = /
+    const deep_path = "/a/b/c/d/e/f/g/../../../../../../..";
+    const result = canonicalizePath(allocator, deep_path);
+
+    // Reduces to root /
+    if (result) |path| {
+        defer allocator.free(path);
+        try std.testing.expectEqualStrings("/", path);
+    }
+}
+
+test "matches with unicode-like paths" {
+    // Test that multibyte sequences don't confuse pattern matching
+    // (paths use raw bytes, not unicode decoding)
+    try std.testing.expect(matches("/data/**", "/data/file\xc0\xaf"));
+    try std.testing.expect(!matches("/data/*", "/data/dir\xc0\xaf/file"));
+}

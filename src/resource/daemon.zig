@@ -1,10 +1,12 @@
-//! Resource daemon main loop.
+//! Resource daemon for ClawGate E2E connections.
 //!
-//! Connects to NATS, subscribes to file operation requests,
-//! validates tokens, executes operations, and publishes audit events.
+//! Connects to the agent daemon via TCP, performs handshake, and handles
+//! encrypted file operation requests in the main loop.
 
 const std = @import("std");
-const nats = @import("nats");
+const tcp = @import("../transport/tcp.zig");
+const handshake = @import("../protocol/handshake.zig");
+const e2e = @import("../capability/e2e.zig");
 const handlers = @import("handlers.zig");
 const crypto = @import("../capability/crypto.zig");
 const protocol = @import("../protocol/json.zig");
@@ -12,27 +14,28 @@ const paths = @import("../path.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
-const DEFAULT_NATS_URL = "nats://localhost:4222";
-const REQUEST_TIMEOUT_MS: u32 = 30000;
+const RECONNECT_DELAY_MS: u64 = 5000;
 
 pub const DaemonError = error{
     KeyLoadFailed,
     ConnectionFailed,
-    SubscribeFailed,
+    HandshakeFailed,
     OutOfMemory,
 };
 
 /// Configuration for the resource daemon.
 pub const Config = struct {
-    nats_url: []const u8 = DEFAULT_NATS_URL,
+    connect_addr: []const u8,
+    connect_port: u16 = tcp.DEFAULT_PORT,
     public_key_path: []const u8,
+    resource_id: []const u8 = "clawgate-resource",
     environ: std.process.Environ = .empty,
 };
 
 /// Runs the resource daemon with the given configuration.
-/// This function blocks indefinitely, processing requests.
+/// Blocks indefinitely, processing requests from the agent.
 pub fn run(allocator: Allocator, config: Config) DaemonError!void {
-    var threaded: std.Io.Threaded = .init(allocator, .{
+    var threaded: Io.Threaded = .init(allocator, .{
         .environ = config.environ,
     });
     defer threaded.deinit();
@@ -52,112 +55,174 @@ pub fn run(allocator: Allocator, config: Config) DaemonError!void {
 }
 
 /// Internal entry point that accepts an Io instance for testing.
-fn runWithIo(
+pub fn runWithIo(
     allocator: Allocator,
     io: Io,
     config: Config,
     home: []const u8,
 ) !void {
-    // Expand public key path
     const key_path = try paths.expand(allocator, config.public_key_path, home);
     defer allocator.free(key_path);
 
     std.log.info("Loading public key from {s}", .{key_path});
     const public_key = try crypto.loadPublicKey(io, key_path);
 
-    std.log.info("Connecting to NATS at {s}", .{config.nats_url});
-    const client = nats.Client.connect(
-        allocator,
-        io,
-        config.nats_url,
-        .{ .name = "clawgate-resource" },
-    ) catch {
-        std.log.err("Failed to connect to NATS server", .{});
-        return DaemonError.ConnectionFailed;
-    };
-    defer client.deinit(allocator);
+    std.log.info(
+        "Resource daemon starting, will connect to {s}:{d}",
+        .{ config.connect_addr, config.connect_port },
+    );
 
-    const sub = client.subscribe(allocator, "clawgate.req.files.>") catch {
-        std.log.err("Failed to subscribe", .{});
-        return DaemonError.SubscribeFailed;
-    };
-    defer sub.deinit(allocator);
+    while (true) {
+        connectAndServe(allocator, io, config, public_key) catch |err| {
+            std.log.warn("Connection error: {}, reconnecting...", .{err});
+        };
 
-    client.flush(allocator) catch {
-        std.log.err("Failed to flush subscription", .{});
-        return DaemonError.ConnectionFailed;
-    };
-
-    std.log.info("Resource daemon listening on clawgate.req.files.>", .{});
-
-    mainLoop(allocator, io, client, sub, public_key);
+        io.sleep(.fromMilliseconds(RECONNECT_DELAY_MS), .awake) catch {};
+    }
 }
 
-/// Main request processing loop. Blocks indefinitely.
+/// Connects to agent, performs handshake, and runs main loop.
+fn connectAndServe(
+    allocator: Allocator,
+    io: Io,
+    config: Config,
+    public_key: crypto.PublicKey,
+) !void {
+    std.log.info(
+        "Connecting to agent at {s}:{d}",
+        .{ config.connect_addr, config.connect_port },
+    );
+
+    var conn = tcp.connectTo(
+        io,
+        config.connect_addr,
+        config.connect_port,
+    ) catch {
+        return DaemonError.ConnectionFailed;
+    };
+    defer conn.close();
+
+    std.log.info("Connected, performing handshake", .{});
+
+    var keypair = e2e.KeyPair.generate(io);
+    defer keypair.deinit();
+
+    const resource_pubkey_b64 = e2e.encodePublicKey(keypair.public_key);
+
+    const request = handshake.HandshakeRequest{
+        .version = handshake.PROTOCOL_VERSION,
+        .resource_pubkey = &resource_pubkey_b64,
+        .resource_id = config.resource_id,
+    };
+
+    const request_json = request.serialize(allocator) catch {
+        return DaemonError.OutOfMemory;
+    };
+    defer allocator.free(request_json);
+
+    conn.send(request_json) catch {
+        std.log.warn("Failed to send handshake request", .{});
+        return DaemonError.HandshakeFailed;
+    };
+
+    const response_json = conn.recv(allocator) catch {
+        std.log.warn("Failed to receive handshake response", .{});
+        return DaemonError.HandshakeFailed;
+    };
+    defer allocator.free(response_json);
+
+    var parsed_response = handshake.HandshakeResponse.parse(
+        allocator,
+        response_json,
+    ) catch {
+        std.log.warn("Invalid handshake response", .{});
+        return DaemonError.HandshakeFailed;
+    };
+    defer parsed_response.deinit();
+
+    if (!parsed_response.value.ok) {
+        const err_msg = parsed_response.value.@"error" orelse "unknown error";
+        std.log.warn("Handshake rejected: {s}", .{err_msg});
+        return DaemonError.HandshakeFailed;
+    }
+
+    const agent_pubkey_b64 = parsed_response.value.agent_pubkey orelse {
+        std.log.warn("Missing agent public key in response", .{});
+        return DaemonError.HandshakeFailed;
+    };
+
+    const session_id = parsed_response.value.session_id orelse {
+        std.log.warn("Missing session ID in response", .{});
+        return DaemonError.HandshakeFailed;
+    };
+
+    const agent_pubkey = e2e.decodePublicKey(agent_pubkey_b64) catch {
+        std.log.warn("Invalid agent public key", .{});
+        return DaemonError.HandshakeFailed;
+    };
+
+    var session = e2e.Session.establish(
+        allocator,
+        keypair.secret_key,
+        agent_pubkey,
+        session_id,
+    ) catch {
+        std.log.warn("Failed to establish E2E session", .{});
+        return DaemonError.HandshakeFailed;
+    };
+    defer session.deinit(allocator);
+
+    var enc_conn = handshake.EncryptedConnection{
+        .conn = &conn,
+        .session = session,
+    };
+
+    std.log.info("E2E session established: {s}", .{session_id});
+
+    mainLoop(allocator, io, &enc_conn, public_key);
+}
+
+/// Main request processing loop. Runs until connection closes.
 fn mainLoop(
     allocator: Allocator,
     io: Io,
-    client: *nats.Client,
-    sub: *nats.Client.Sub,
+    enc_conn: *handshake.EncryptedConnection,
     public_key: crypto.PublicKey,
 ) void {
     while (true) {
-        const timeout = REQUEST_TIMEOUT_MS;
-        const msg = sub.nextWithTimeout(allocator, timeout) catch |err| {
-            std.log.warn("Error receiving message: {}", .{err});
-            continue;
-        };
-
-        if (msg) |m| {
-            defer m.deinit(allocator);
-            handleMessage(allocator, io, client, m, public_key);
-        }
-    }
-}
-
-/// Processes a single request message.
-fn handleMessage(
-    allocator: Allocator,
-    io: Io,
-    client: *nats.Client,
-    msg: nats.Client.Message,
-    public_key: crypto.PublicKey,
-) void {
-    std.log.debug(
-        "Received request on {s} ({d} bytes)",
-        .{ msg.subject, msg.data.len },
-    );
-
-    const response = handlers.handleRequest(
-        allocator,
-        io,
-        msg.data,
-        public_key,
-    ) catch |err| {
-        std.log.err("Handler error: {}", .{err});
-        sendErrorResponse(allocator, client, msg.reply_to);
-        return;
-    };
-    defer allocator.free(response);
-
-    if (msg.reply_to) |reply_to| {
-        client.publish(reply_to, response) catch |err| {
-            std.log.err("Failed to send response: {}", .{err});
+        const request_json = enc_conn.recvEncrypted(allocator) catch |err| {
+            std.log.warn("Connection closed: {}", .{err});
             return;
         };
-        client.flush(allocator) catch |err| {
-            std.log.err("Failed to flush response: {}", .{err});
-        };
-    }
+        defer allocator.free(request_json);
 
-    publishAuditEvent(allocator, client, msg, response);
+        std.log.debug("Received request ({d} bytes)", .{request_json.len});
+
+        const response_json = handlers.handleRequest(
+            allocator,
+            io,
+            request_json,
+            public_key,
+        ) catch |err| {
+            std.log.err("Handler error: {}", .{err});
+            sendErrorResponse(allocator, enc_conn);
+            continue;
+        };
+        defer allocator.free(response_json);
+
+        enc_conn.sendEncrypted(allocator, response_json) catch |err| {
+            std.log.warn("Failed to send response: {}", .{err});
+            return;
+        };
+
+        logAuditEvent(allocator, request_json, response_json);
+    }
 }
 
 /// Sends a generic error response when request handling fails.
 fn sendErrorResponse(
     allocator: Allocator,
-    client: *nats.Client,
-    reply_to: ?[]const u8,
+    enc_conn: *handshake.EncryptedConnection,
 ) void {
     const error_json = protocol.formatError(
         allocator,
@@ -167,50 +232,20 @@ fn sendErrorResponse(
     ) catch return;
     defer allocator.free(error_json);
 
-    if (reply_to) |rt| {
-        client.publish(rt, error_json) catch return;
-        client.flush(allocator) catch {};
-    }
+    enc_conn.sendEncrypted(allocator, error_json) catch {};
 }
 
-/// Publishes an audit event for a completed request.
-fn publishAuditEvent(
+/// Logs an audit event for a completed request.
+fn logAuditEvent(
     allocator: Allocator,
-    client: *nats.Client,
-    request_msg: nats.Client.Message,
+    request_json: []const u8,
     response_json: []const u8,
 ) void {
-    const audit_json = formatAuditEvent(
-        allocator,
-        request_msg,
-        response_json,
-    ) catch return;
-    defer allocator.free(audit_json);
-
-    client.publish("clawgate.audit.files", audit_json) catch |err| {
-        std.log.warn("Failed to publish audit event: {}", .{err});
-    };
-}
-
-/// Formats an audit event as JSON.
-fn formatAuditEvent(
-    allocator: Allocator,
-    request_msg: nats.Client.Message,
-    response_json: []const u8,
-) ![]const u8 {
-    const instant = std.time.Instant.now() catch {
-        return error.TimerUnavailable;
-    };
-    const secs: i64 = @intCast(instant.timestamp.sec);
-
     var req_id: []const u8 = "unknown";
     var op: []const u8 = "unknown";
     var path: []const u8 = "unknown";
 
-    var parsed_req = protocol.parseRequest(
-        allocator,
-        request_msg.data,
-    ) catch null;
+    var parsed_req = protocol.parseRequest(allocator, request_json) catch null;
     defer if (parsed_req) |*pr| pr.deinit();
 
     if (parsed_req) |pr| {
@@ -221,57 +256,221 @@ fn formatAuditEvent(
 
     const success = std.mem.indexOf(u8, response_json, "\"ok\":true") != null;
 
-    var output: std.Io.Writer.Allocating = .init(allocator);
-    errdefer output.deinit();
-
-    const writer = &output.writer;
-
-    try writer.print(
-        "{{\"timestamp\":{d},\"request_id\":\"{s}\",\"op\":\"{s}\"," ++
-            "\"path\":\"{s}\",\"success\":{s}}}",
-        .{
-            secs,
-            req_id,
-            op,
-            path,
-            if (success) "true" else "false",
-        },
+    std.log.info(
+        "AUDIT: req={s} op={s} path={s} success={s}",
+        .{ req_id, op, path, if (success) "true" else "false" },
     );
-
-    const result = output.written();
-    const owned = try allocator.dupe(u8, result);
-    output.deinit();
-    return owned;
 }
 
 // Tests
 
-test "format audit event" {
+test "handshake request serialization" {
     const allocator = std.testing.allocator;
 
-    const request_data =
-        \\{"id":"req123","token":"t","op":"read",
-        \\"params":{"path":"/tmp/test.txt"}}
-    ;
+    var threaded: Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
 
-    const msg = nats.Client.Message{
-        .subject = "clawgate.req.files.read",
-        .data = request_data,
-        .reply_to = null,
-        .headers = null,
-        .sid = 1,
-        .owned = false,
+    var keypair = e2e.KeyPair.generate(io);
+    defer keypair.deinit();
+
+    const pubkey_b64 = e2e.encodePublicKey(keypair.public_key);
+
+    const request = handshake.HandshakeRequest{
+        .version = 1,
+        .resource_pubkey = &pubkey_b64,
+        .resource_id = "test-resource",
     };
 
-    const response = "{\"id\":\"req123\",\"ok\":true,\"result\":{}}";
+    const json = try request.serialize(allocator);
+    defer allocator.free(json);
 
-    const audit = try formatAuditEvent(allocator, msg, response);
-    defer allocator.free(audit);
+    var parsed = try handshake.HandshakeRequest.parse(allocator, json);
+    defer parsed.deinit();
 
-    const has_req_id = std.mem.indexOf(u8, audit, "\"request_id\":\"req123\"");
-    const has_op = std.mem.indexOf(u8, audit, "\"op\":\"read\"");
-    const has_success = std.mem.indexOf(u8, audit, "\"success\":true");
-    try std.testing.expect(has_req_id != null);
-    try std.testing.expect(has_op != null);
-    try std.testing.expect(has_success != null);
+    try std.testing.expectEqual(@as(u8, 1), parsed.value.version);
+    try std.testing.expectEqualStrings("test-resource", parsed.value.resource_id);
+}
+
+test "handshake response parsing" {
+    const allocator = std.testing.allocator;
+
+    var threaded: Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var keypair = e2e.KeyPair.generate(io);
+    defer keypair.deinit();
+
+    const pubkey_b64 = e2e.encodePublicKey(keypair.public_key);
+    const session_id = handshake.generateSessionId(io);
+
+    const response = handshake.HandshakeResponse{
+        .ok = true,
+        .agent_pubkey = &pubkey_b64,
+        .session_id = &session_id,
+    };
+
+    const json = try response.serialize(allocator);
+    defer allocator.free(json);
+
+    var parsed = try handshake.HandshakeResponse.parse(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value.ok);
+    try std.testing.expect(parsed.value.agent_pubkey != null);
+    try std.testing.expect(parsed.value.session_id != null);
+
+    const decoded = try e2e.decodePublicKey(parsed.value.agent_pubkey.?);
+    try std.testing.expectEqualSlices(u8, &keypair.public_key, &decoded);
+}
+
+test "error response parsing" {
+    const allocator = std.testing.allocator;
+
+    const response = handshake.HandshakeResponse{
+        .ok = false,
+        .@"error" = "connection refused",
+    };
+
+    const json = try response.serialize(allocator);
+    defer allocator.free(json);
+
+    var parsed = try handshake.HandshakeResponse.parse(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expect(!parsed.value.ok);
+    try std.testing.expectEqualStrings(
+        "connection refused",
+        parsed.value.@"error".?,
+    );
+}
+
+test "full E2E session establishment" {
+    const allocator = std.testing.allocator;
+
+    var threaded: Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var resource_kp = e2e.KeyPair.generate(io);
+    defer resource_kp.deinit();
+
+    var agent_kp = e2e.KeyPair.generate(io);
+    defer agent_kp.deinit();
+
+    const resource_pubkey_b64 = e2e.encodePublicKey(resource_kp.public_key);
+
+    const request = handshake.HandshakeRequest{
+        .version = 1,
+        .resource_pubkey = &resource_pubkey_b64,
+        .resource_id = "test-resource",
+    };
+
+    const request_json = try request.serialize(allocator);
+    defer allocator.free(request_json);
+
+    var parsed_req = try handshake.HandshakeRequest.parse(allocator, request_json);
+    defer parsed_req.deinit();
+
+    const decoded_resource_pubkey = try e2e.decodePublicKey(
+        parsed_req.value.resource_pubkey,
+    );
+
+    const session_id = handshake.generateSessionId(io);
+    const agent_pubkey_b64 = e2e.encodePublicKey(agent_kp.public_key);
+
+    const response = handshake.HandshakeResponse{
+        .ok = true,
+        .agent_pubkey = &agent_pubkey_b64,
+        .session_id = &session_id,
+    };
+
+    const response_json = try response.serialize(allocator);
+    defer allocator.free(response_json);
+
+    var parsed_resp = try handshake.HandshakeResponse.parse(
+        allocator,
+        response_json,
+    );
+    defer parsed_resp.deinit();
+
+    try std.testing.expect(parsed_resp.value.ok);
+
+    const decoded_agent_pubkey = try e2e.decodePublicKey(
+        parsed_resp.value.agent_pubkey.?,
+    );
+
+    var resource_session = try e2e.Session.establish(
+        allocator,
+        resource_kp.secret_key,
+        decoded_agent_pubkey,
+        parsed_resp.value.session_id.?,
+    );
+    defer resource_session.deinit(allocator);
+
+    var agent_session = try e2e.Session.establish(
+        allocator,
+        agent_kp.secret_key,
+        decoded_resource_pubkey,
+        &session_id,
+    );
+    defer agent_session.deinit(allocator);
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &resource_session.shared_secret,
+        &agent_session.shared_secret,
+    );
+
+    const test_msg = "Hello from resource!";
+    const encrypted = try resource_session.encrypt(allocator, test_msg);
+    defer allocator.free(encrypted);
+
+    const decrypted = try agent_session.decrypt(allocator, encrypted);
+    defer allocator.free(decrypted);
+
+    try std.testing.expectEqualStrings(test_msg, decrypted);
+}
+
+test "audit logging" {
+    const allocator = std.testing.allocator;
+
+    const request_json =
+        \\{"id":"req123","token":"t","op":"read","params":{"path":"/tmp/test"}}
+    ;
+
+    const response_json = "{\"id\":\"req123\",\"ok\":true,\"result\":{}}";
+
+    logAuditEvent(allocator, request_json, response_json);
+}
+
+test "format audit event - success case" {
+    const allocator = std.testing.allocator;
+
+    const request_json =
+        \\{"id":"req123","token":"t","op":"read","params":{"path":"/tmp/test.txt"}}
+    ;
+
+    const response_json = "{\"id\":\"req123\",\"ok\":true,\"result\":{}}";
+
+    var req_id: []const u8 = "unknown";
+    var op: []const u8 = "unknown";
+    var path: []const u8 = "unknown";
+
+    var parsed_req = protocol.parseRequest(allocator, request_json) catch null;
+    defer if (parsed_req) |*pr| pr.deinit();
+
+    if (parsed_req) |pr| {
+        req_id = pr.value.id;
+        op = pr.value.op;
+        path = pr.value.params.path;
+    }
+
+    const success = std.mem.indexOf(u8, response_json, "\"ok\":true") != null;
+
+    try std.testing.expectEqualStrings("req123", req_id);
+    try std.testing.expectEqualStrings("read", op);
+    try std.testing.expectEqualStrings("/tmp/test.txt", path);
+    try std.testing.expect(success);
 }

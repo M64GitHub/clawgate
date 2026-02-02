@@ -77,6 +77,8 @@ pub fn savePublicKey(
 }
 
 /// Loads a secret key from a file.
+/// SECURITY: Caller should zero the key when done using:
+/// `std.crypto.secureZero(SecretKey, &key);`
 pub fn loadSecretKey(io: Io, path: []const u8) !SecretKey {
     const file = Dir.openFile(.cwd(), io, path, .{}) catch {
         return CryptoError.FileNotFound;

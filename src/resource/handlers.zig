@@ -626,3 +626,27 @@ test "isForbiddenPath allows safe paths" {
     // Public keys are OK
     try std.testing.expect(!isForbiddenPath("/home/user/.clawgate/public.key"));
 }
+
+test "isForbiddenPath - no false positives on similar names" {
+    // Paths containing forbidden substrings but NOT in forbidden locations
+    // These should NOT be blocked (false positive prevention)
+
+    // .ssh in filename/dirname but not /.ssh/ directory
+    try std.testing.expect(!isForbiddenPath("/home/user/.ssh-backup/key"));
+    try std.testing.expect(!isForbiddenPath("/home/user/my.ssh.dir/file"));
+    try std.testing.expect(!isForbiddenPath("/data/sshconfig/file"));
+    try std.testing.expect(!isForbiddenPath("/home/user/openssh-docs/readme"));
+
+    // .env in path but not as suffix or /.env pattern
+    try std.testing.expect(!isForbiddenPath("/home/user/project.env.example"));
+    try std.testing.expect(!isForbiddenPath("/home/user/env-setup/config"));
+    try std.testing.expect(!isForbiddenPath("/data/environment/vars"));
+
+    // Similar to aws/gcloud but not the actual credential dirs
+    try std.testing.expect(!isForbiddenPath("/home/user/aws-docs/guide.md"));
+    try std.testing.expect(!isForbiddenPath("/data/gcloud-tutorial/steps"));
+
+    // Keys in path but not private key patterns
+    try std.testing.expect(!isForbiddenPath("/home/user/api-keys-docs/readme"));
+    try std.testing.expect(!isForbiddenPath("/data/keyboard/layout.json"));
+}

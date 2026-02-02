@@ -1,7 +1,7 @@
 //! Configuration loading for ClawGate.
 //!
 //! Loads configuration from ~/.clawgate/config.toml with support for:
-//! - NATS connection settings
+//! - TCP connection settings
 //! - Key paths
 //! - Forbidden paths (resource daemon)
 //! - Token directory (agent daemon)
@@ -22,8 +22,8 @@ pub const ConfigError = error{
 
 /// Full ClawGate configuration.
 pub const Config = struct {
-    /// NATS connection settings.
-    nats: NatsConfig,
+    /// TCP connection settings.
+    tcp: TcpConfig,
     /// Key file paths.
     keys: KeysConfig,
     /// Resource daemon settings (only when mode=resource).
@@ -33,26 +33,27 @@ pub const Config = struct {
 
     /// Releases all allocated memory.
     pub fn deinit(self: *Config, allocator: Allocator) void {
-        self.nats.deinit(allocator);
+        self.tcp.deinit(allocator);
         self.keys.deinit(allocator);
         self.resource.deinit(allocator);
         self.agent.deinit(allocator);
     }
 };
 
-/// NATS connection configuration.
-pub const NatsConfig = struct {
-    /// NATS server URL.
-    url: []const u8,
-    /// Path to NKey seed file for authentication (optional).
-    nkey_seed_file: ?[]const u8 = null,
-    /// Path to TLS CA certificate file (optional).
-    tls_ca_file: ?[]const u8 = null,
+/// TCP connection configuration.
+pub const TcpConfig = struct {
+    /// Listen address for agent daemon.
+    listen_addr: []const u8,
+    /// Listen port for agent daemon.
+    listen_port: u16 = 4223,
+    /// Connect address for resource daemon (optional).
+    connect_addr: ?[]const u8 = null,
+    /// Connect port for resource daemon.
+    connect_port: u16 = 4223,
 
-    pub fn deinit(self: *NatsConfig, allocator: Allocator) void {
-        allocator.free(self.url);
-        if (self.nkey_seed_file) |f| allocator.free(f);
-        if (self.tls_ca_file) |f| allocator.free(f);
+    pub fn deinit(self: *TcpConfig, allocator: Allocator) void {
+        allocator.free(self.listen_addr);
+        if (self.connect_addr) |a| allocator.free(a);
     }
 };
 
@@ -193,8 +194,8 @@ pub fn parse(
         const kv = parseKeyValue(line) orelse continue;
 
         switch (current_section) {
-            .nats => {
-                try applyNatsConfig(allocator, &config.nats, kv, home);
+            .tcp => {
+                try applyTcpConfig(allocator, &config.tcp, kv, home);
             },
             .keys => {
                 try applyKeysConfig(allocator, &config.keys, kv, home);
@@ -230,10 +231,10 @@ pub fn parse(
 /// Returns default configuration.
 /// Caller must call Config.deinit() when done.
 pub fn defaults(allocator: Allocator, home: []const u8) !Config {
-    const url = allocator.dupe(u8, "nats://localhost:4222") catch {
+    const listen_addr = allocator.dupe(u8, "0.0.0.0") catch {
         return ConfigError.OutOfMemory;
     };
-    errdefer allocator.free(url);
+    errdefer allocator.free(listen_addr);
 
     const private_key = std.fmt.allocPrint(
         allocator,
@@ -262,10 +263,11 @@ pub fn defaults(allocator: Allocator, home: []const u8) !Config {
     ) catch return ConfigError.OutOfMemory;
 
     return Config{
-        .nats = .{
-            .url = url,
-            .nkey_seed_file = null,
-            .tls_ca_file = null,
+        .tcp = .{
+            .listen_addr = listen_addr,
+            .listen_port = 4223,
+            .connect_addr = null,
+            .connect_port = 4223,
         },
         .keys = .{
             .private_key = private_key,
@@ -284,7 +286,7 @@ pub fn defaults(allocator: Allocator, home: []const u8) !Config {
 
 const Section = enum {
     none,
-    nats,
+    tcp,
     keys,
     resource,
     agent,
@@ -292,7 +294,7 @@ const Section = enum {
 
 fn parseSection(line: []const u8) Section {
     const trimmed = std.mem.trim(u8, line, "[] \t");
-    if (std.mem.eql(u8, trimmed, "nats")) return .nats;
+    if (std.mem.eql(u8, trimmed, "tcp")) return .tcp;
     if (std.mem.eql(u8, trimmed, "keys")) return .keys;
     if (std.mem.eql(u8, trimmed, "resource")) return .resource;
     if (std.mem.eql(u8, trimmed, "agent")) return .agent;
@@ -317,21 +319,22 @@ fn parseKeyValue(line: []const u8) ?KeyValue {
     return KeyValue{ .key = key, .value = value };
 }
 
-fn applyNatsConfig(
+fn applyTcpConfig(
     allocator: Allocator,
-    config: *NatsConfig,
+    config: *TcpConfig,
     kv: KeyValue,
     home: []const u8,
 ) !void {
-    if (std.mem.eql(u8, kv.key, "url")) {
-        allocator.free(config.url);
-        config.url = try expandAndDupe(allocator, kv.value, home);
-    } else if (std.mem.eql(u8, kv.key, "nkey_seed_file")) {
-        if (config.nkey_seed_file) |f| allocator.free(f);
-        config.nkey_seed_file = try expandAndDupe(allocator, kv.value, home);
-    } else if (std.mem.eql(u8, kv.key, "tls_ca_file")) {
-        if (config.tls_ca_file) |f| allocator.free(f);
-        config.tls_ca_file = try expandAndDupe(allocator, kv.value, home);
+    if (std.mem.eql(u8, kv.key, "listen_addr")) {
+        allocator.free(config.listen_addr);
+        config.listen_addr = try expandAndDupe(allocator, kv.value, home);
+    } else if (std.mem.eql(u8, kv.key, "listen_port")) {
+        config.listen_port = std.fmt.parseInt(u16, kv.value, 10) catch 4223;
+    } else if (std.mem.eql(u8, kv.key, "connect_addr")) {
+        if (config.connect_addr) |a| allocator.free(a);
+        config.connect_addr = try expandAndDupe(allocator, kv.value, home);
+    } else if (std.mem.eql(u8, kv.key, "connect_port")) {
+        config.connect_port = std.fmt.parseInt(u16, kv.value, 10) catch 4223;
     }
 }
 
@@ -472,9 +475,10 @@ test "defaults creates valid config" {
     defer config.deinit(allocator);
 
     try std.testing.expectEqualStrings(
-        "nats://localhost:4222",
-        config.nats.url,
+        "0.0.0.0",
+        config.tcp.listen_addr,
     );
+    try std.testing.expectEqual(@as(u16, 4223), config.tcp.listen_port);
     try std.testing.expectEqualStrings(
         "/home/test/.clawgate/keys/secret.key",
         config.keys.private_key,
@@ -495,8 +499,11 @@ test "parse simple config" {
 
     const content =
         \\# ClawGate config
-        \\[nats]
-        \\url = "nats://myserver:4222"
+        \\[tcp]
+        \\listen_addr = "127.0.0.1"
+        \\listen_port = 5000
+        \\connect_addr = "remote.example.com"
+        \\connect_port = 4223
         \\
         \\[keys]
         \\private_key = "~/.clawgate/custom/secret.key"
@@ -514,9 +521,15 @@ test "parse simple config" {
     defer config.deinit(allocator);
 
     try std.testing.expectEqualStrings(
-        "nats://myserver:4222",
-        config.nats.url,
+        "127.0.0.1",
+        config.tcp.listen_addr,
     );
+    try std.testing.expectEqual(@as(u16, 5000), config.tcp.listen_port);
+    try std.testing.expectEqualStrings(
+        "remote.example.com",
+        config.tcp.connect_addr.?,
+    );
+    try std.testing.expectEqual(@as(u16, 4223), config.tcp.connect_port);
     try std.testing.expectEqualStrings(
         "/home/user/.clawgate/custom/secret.key",
         config.keys.private_key,
@@ -594,18 +607,18 @@ test "isForbidden matches recursive patterns" {
 }
 
 test "parseKeyValue handles quoted values" {
-    const kv1 = parseKeyValue("url = \"nats://localhost:4222\"");
+    const kv1 = parseKeyValue("listen_addr = \"127.0.0.1\"");
     try std.testing.expect(kv1 != null);
-    try std.testing.expectEqualStrings("url", kv1.?.key);
-    try std.testing.expectEqualStrings("nats://localhost:4222", kv1.?.value);
+    try std.testing.expectEqualStrings("listen_addr", kv1.?.key);
+    try std.testing.expectEqualStrings("127.0.0.1", kv1.?.value);
 
-    const kv2 = parseKeyValue("url = nats://localhost:4222");
+    const kv2 = parseKeyValue("listen_addr = 0.0.0.0");
     try std.testing.expect(kv2 != null);
-    try std.testing.expectEqualStrings("nats://localhost:4222", kv2.?.value);
+    try std.testing.expectEqualStrings("0.0.0.0", kv2.?.value);
 }
 
 test "parseSection identifies sections" {
-    try std.testing.expectEqual(Section.nats, parseSection("[nats]"));
+    try std.testing.expectEqual(Section.tcp, parseSection("[tcp]"));
     try std.testing.expectEqual(Section.keys, parseSection("[keys]"));
     try std.testing.expectEqual(Section.resource, parseSection("[resource]"));
     try std.testing.expectEqual(Section.agent, parseSection("[agent]"));
@@ -633,12 +646,12 @@ test "expandAndDupe handles absolute paths" {
 
     const expanded = try expandAndDupe(
         allocator,
-        "/etc/nats.conf",
+        "/etc/ssl/certs",
         "/home/test",
     );
     defer allocator.free(expanded);
 
-    try std.testing.expectEqualStrings("/etc/nats.conf", expanded);
+    try std.testing.expectEqualStrings("/etc/ssl/certs", expanded);
 }
 
 test "expandAndDupe handles tilde only" {
@@ -721,35 +734,33 @@ test "isForbidden matches exact paths" {
     _ = allocator;
 }
 
-// Critical: NATS optional fields
+// Critical: TCP config fields
 
-test "parse nats optional fields" {
+test "parse tcp config fields" {
     const allocator = std.testing.allocator;
 
     const content =
-        \\[nats]
-        \\url = "nats://secure.example.com:4222"
-        \\nkey_seed_file = "~/.clawgate/nats.seed"
-        \\tls_ca_file = "/etc/ssl/certs/nats-ca.pem"
+        \\[tcp]
+        \\listen_addr = "192.168.1.100"
+        \\listen_port = 8080
+        \\connect_addr = "agent.example.com"
+        \\connect_port = 4223
     ;
 
     var config = try parse(allocator, content, "/home/user");
     defer config.deinit(allocator);
 
     try std.testing.expectEqualStrings(
-        "nats://secure.example.com:4222",
-        config.nats.url,
+        "192.168.1.100",
+        config.tcp.listen_addr,
     );
-    try std.testing.expect(config.nats.nkey_seed_file != null);
+    try std.testing.expectEqual(@as(u16, 8080), config.tcp.listen_port);
+    try std.testing.expect(config.tcp.connect_addr != null);
     try std.testing.expectEqualStrings(
-        "/home/user/.clawgate/nats.seed",
-        config.nats.nkey_seed_file.?,
+        "agent.example.com",
+        config.tcp.connect_addr.?,
     );
-    try std.testing.expect(config.nats.tls_ca_file != null);
-    try std.testing.expectEqualStrings(
-        "/etc/ssl/certs/nats-ca.pem",
-        config.nats.tls_ca_file.?,
-    );
+    try std.testing.expectEqual(@as(u16, 4223), config.tcp.connect_port);
 }
 
 // Important: Empty and minimal configs
@@ -762,8 +773,8 @@ test "parse empty config returns defaults" {
 
     // Should have all defaults
     try std.testing.expectEqualStrings(
-        "nats://localhost:4222",
-        config.nats.url,
+        "0.0.0.0",
+        config.tcp.listen_addr,
     );
     try std.testing.expectEqualStrings(
         "/home/user/.clawgate/keys/secret.key",
@@ -787,8 +798,8 @@ test "parse comments-only config returns defaults" {
     defer config.deinit(allocator);
 
     try std.testing.expectEqualStrings(
-        "nats://localhost:4222",
-        config.nats.url,
+        "0.0.0.0",
+        config.tcp.listen_addr,
     );
 }
 
@@ -819,8 +830,8 @@ test "parse config with unknown keys ignores them" {
     const allocator = std.testing.allocator;
 
     const content =
-        \\[nats]
-        \\url = "nats://localhost:4222"
+        \\[tcp]
+        \\listen_addr = "127.0.0.1"
         \\unknown_key = "should be ignored"
         \\another_unknown = 12345
         \\
@@ -837,8 +848,8 @@ test "parse config with unknown keys ignores them" {
 
     // Should parse valid keys and ignore unknown ones
     try std.testing.expectEqualStrings(
-        "nats://localhost:4222",
-        config.nats.url,
+        "127.0.0.1",
+        config.tcp.listen_addr,
     );
     try std.testing.expectEqualStrings(
         "/home/user/.clawgate/keys/secret.key",
@@ -878,17 +889,17 @@ test "parseKeyValue handles empty value" {
 }
 
 test "parseKeyValue handles value with embedded equals" {
-    const kv = parseKeyValue("url = nats://host:4222?token=abc=def");
+    const kv = parseKeyValue("addr = host:4222?token=abc=def");
     try std.testing.expect(kv != null);
-    try std.testing.expectEqualStrings("url", kv.?.key);
+    try std.testing.expectEqualStrings("addr", kv.?.key);
     try std.testing.expectEqualStrings(
-        "nats://host:4222?token=abc=def",
+        "host:4222?token=abc=def",
         kv.?.value,
     );
 }
 
 test "parseSection handles whitespace" {
-    try std.testing.expectEqual(Section.nats, parseSection("[ nats ]"));
+    try std.testing.expectEqual(Section.tcp, parseSection("[ tcp ]"));
     try std.testing.expectEqual(Section.keys, parseSection("[  keys  ]"));
     try std.testing.expectEqual(Section.resource, parseSection("[resource ]"));
 }
@@ -904,9 +915,9 @@ test "parse handles mixed whitespace and empty lines" {
     const content =
         \\
         \\
-        \\[nats]
+        \\[tcp]
         \\
-        \\url = "nats://test:4222"
+        \\listen_addr = "10.0.0.1"
         \\
         \\
         \\[keys]
@@ -919,7 +930,7 @@ test "parse handles mixed whitespace and empty lines" {
     var config = try parse(allocator, content, "/home/user");
     defer config.deinit(allocator);
 
-    try std.testing.expectEqualStrings("nats://test:4222", config.nats.url);
+    try std.testing.expectEqualStrings("10.0.0.1", config.tcp.listen_addr);
     try std.testing.expectEqualStrings("/path/to/key", config.keys.private_key);
 }
 
@@ -929,16 +940,16 @@ test "parse handles inline comments style gracefully" {
     // Note: our parser doesn't strip inline comments, value includes them
     // This tests current behavior - inline comments are NOT supported
     const content =
-        \\[nats]
-        \\url = "nats://localhost:4222"
+        \\[tcp]
+        \\listen_addr = "0.0.0.0"
     ;
 
     var config = try parse(allocator, content, "/home/user");
     defer config.deinit(allocator);
 
     try std.testing.expectEqualStrings(
-        "nats://localhost:4222",
-        config.nats.url,
+        "0.0.0.0",
+        config.tcp.listen_addr,
     );
 }
 

@@ -778,3 +778,99 @@ test "format timestamp far future" {
 
     try std.testing.expect(std.mem.startsWith(u8, ts, "2100-"));
 }
+
+test "write file - symlink rejected in append mode" {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const target_path = "/tmp/clawgate_symlink_write_target.txt";
+    const link_path = "/tmp/clawgate_symlink_write_test.txt";
+
+    // Create target file
+    {
+        const file = Dir.createFile(.cwd(), io, target_path, .{}) catch return;
+        defer file.close(io);
+        file.writeStreamingAll(io, "original") catch return;
+    }
+    defer Dir.deleteFile(.cwd(), io, target_path) catch {};
+
+    // Create symlink
+    Dir.symLinkAbsolute(io, target_path, link_path, .{}) catch return;
+    defer Dir.deleteFile(.cwd(), io, link_path) catch {};
+
+    // Writing via symlink in append mode should fail
+    const result = writeFile(io, link_path, "appended", .append);
+    if (FOLLOW_SYMLINKS) {
+        // If following, should succeed
+        if (result) |_| {} else |_| {}
+    } else {
+        // Should reject symlink
+        try std.testing.expectError(FileError.IsSymlink, result);
+    }
+}
+
+test "stat file - symlink rejected" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const target_path = "/tmp/clawgate_symlink_stat_target.txt";
+    const link_path = "/tmp/clawgate_symlink_stat_test.txt";
+
+    // Create target file
+    {
+        const file = Dir.createFile(.cwd(), io, target_path, .{}) catch return;
+        defer file.close(io);
+        file.writeStreamingAll(io, "stat target") catch return;
+    }
+    defer Dir.deleteFile(.cwd(), io, target_path) catch {};
+
+    // Create symlink
+    Dir.symLinkAbsolute(io, target_path, link_path, .{}) catch return;
+    defer Dir.deleteFile(.cwd(), io, link_path) catch {};
+
+    // Stat via symlink should fail when FOLLOW_SYMLINKS is false
+    const result = statFile(allocator, io, link_path);
+    if (FOLLOW_SYMLINKS) {
+        if (result) |*r| {
+            var res = r.*;
+            freeStatResult(allocator, &res);
+        } else |_| {}
+    } else {
+        try std.testing.expectError(FileError.IsSymlink, result);
+    }
+}
+
+test "list directory - symlink directory rejected" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const link_path = "/tmp/clawgate_symlink_dir_test";
+
+    // Create symlink to /tmp
+    Dir.symLinkAbsolute(io, "/tmp", link_path, .{}) catch return;
+    defer Dir.deleteFile(.cwd(), io, link_path) catch {};
+
+    // Listing via symlink should fail when FOLLOW_SYMLINKS is false
+    // Note: depending on platform, may return NotADirectory or IsSymlink
+    if (FOLLOW_SYMLINKS) {
+        const result = listDir(allocator, io, link_path, 1);
+        if (result) |entries| {
+            freeListResult(allocator, entries);
+        } else |_| {}
+    } else {
+        // Either error is acceptable - both prevent symlink traversal
+        const result = listDir(allocator, io, link_path, 1);
+        if (result) |entries| {
+            freeListResult(allocator, entries);
+            return error.TestUnexpectedResult;
+        } else |err| {
+            const is_rejected = err == FileError.IsSymlink or
+                err == FileError.NotADirectory;
+            try std.testing.expect(is_rejected);
+        }
+    }
+}

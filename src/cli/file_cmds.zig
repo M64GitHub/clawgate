@@ -1,10 +1,10 @@
 //! File operation commands for ClawGate.
 //!
 //! Agent-side commands that send requests to the resource daemon
-//! via NATS and display results.
+//! via IPC to the agent daemon's E2E encrypted connection.
 
 const std = @import("std");
-const nats = @import("nats");
+const ipc_client = @import("../agent/ipc_client.zig");
 const tokens_mod = @import("../agent/tokens.zig");
 const protocol = @import("../protocol/json.zig");
 const Allocator = std.mem.Allocator;
@@ -14,7 +14,7 @@ pub const FileCmdError = error{
     InvalidArgs,
     MissingPath,
     TokenNotFound,
-    ConnectionFailed,
+    NotConnected,
     RequestFailed,
     RequestTimeout,
     ResponseError,
@@ -23,7 +23,6 @@ pub const FileCmdError = error{
 
 /// Common configuration for file commands.
 pub const FileConfig = struct {
-    nats_url: []const u8 = "nats://localhost:4222",
     token_dir: []const u8 = "",
     path: ?[]const u8 = null,
 };
@@ -34,6 +33,7 @@ pub fn cat(
     io: Io,
     args: []const [:0]const u8,
     home: ?[]const u8,
+    environ: std.process.Environ,
 ) FileCmdError!void {
     var config = FileConfig{};
     var offset: ?usize = null;
@@ -43,13 +43,7 @@ pub fn cat(
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--nats") or std.mem.eql(u8, arg, "-n")) {
-            if (i + 1 >= args.len) return FileCmdError.InvalidArgs;
-            i += 1;
-            config.nats_url = args[i];
-        } else if (std.mem.eql(u8, arg, "--token-dir") or
-            std.mem.eql(u8, arg, "-d"))
-        {
+        if (std.mem.eql(u8, arg, "--token-dir") or std.mem.eql(u8, arg, "-d")) {
             if (i + 1 >= args.len) return FileCmdError.InvalidArgs;
             i += 1;
             config.token_dir = args[i];
@@ -116,18 +110,6 @@ pub fn cat(
         return FileCmdError.TokenNotFound;
     };
 
-    // Connect to NATS
-    const client = nats.Client.connect(
-        allocator,
-        io,
-        config.nats_url,
-        .{ .name = "clawgate-cli" },
-    ) catch {
-        std.debug.print("Error: Failed to connect to NATS\n", .{});
-        return FileCmdError.ConnectionFailed;
-    };
-    defer client.deinit(allocator);
-
     // Build request
     const request = buildRequest(allocator, io, token.raw, "read", .{
         .path = config.path.?,
@@ -136,69 +118,72 @@ pub fn cat(
     }) catch return FileCmdError.OutOfMemory;
     defer allocator.free(request);
 
-    // Send request
-    const reply = client.request(
+    // Send request via IPC to agent daemon
+    const response = ipc_client.sendRequest(
         allocator,
-        "clawgate.req.files.read",
+        environ,
         request,
-        5000,
-    ) catch {
-        std.debug.print("Error: Request failed\n", .{});
-        return FileCmdError.RequestFailed;
-    };
-
-    if (reply) |r| {
-        defer r.deinit(allocator);
-
-        // Parse response
-        const parsed = std.json.parseFromSlice(
-            struct {
-                ok: bool,
-                result: ?struct { content: []const u8, truncated: bool } = null,
-                @"error": ?struct {
-                    code: []const u8,
-                    message: []const u8,
-                } = null,
+    ) catch |err| {
+        switch (err) {
+            ipc_client.IpcError.DaemonNotRunning => {
+                std.debug.print("Error: Agent daemon not running\n", .{});
+                std.debug.print(
+                    "Start the agent daemon first: clawgate --mode agent\n",
+                    .{},
+                );
+                return FileCmdError.NotConnected;
             },
+            ipc_client.IpcError.OutOfMemory => return FileCmdError.OutOfMemory,
+            else => {
+                std.debug.print("Error: Request failed\n", .{});
+                return FileCmdError.RequestFailed;
+            },
+        }
+    };
+    defer allocator.free(response);
+
+    // Parse response
+    const parsed = std.json.parseFromSlice(
+        struct {
+            ok: bool,
+            result: ?struct { content: []const u8, truncated: bool } = null,
+            @"error": ?struct {
+                code: []const u8,
+                message: []const u8,
+            } = null,
+        },
+        allocator,
+        response,
+        .{ .ignore_unknown_fields = true },
+    ) catch {
+        std.debug.print("Error: Invalid response\n", .{});
+        return FileCmdError.ResponseError;
+    };
+    defer parsed.deinit();
+
+    if (!parsed.value.ok) {
+        if (parsed.value.@"error") |err| {
+            std.debug.print("Error: {s}: {s}\n", .{ err.code, err.message });
+        }
+        return FileCmdError.ResponseError;
+    }
+
+    if (parsed.value.result) |result| {
+        // Decode base64 content
+        const decoded = protocol.decodeBase64(
             allocator,
-            r.data,
-            .{ .ignore_unknown_fields = true },
+            result.content,
         ) catch {
-            std.debug.print("Error: Invalid response\n", .{});
+            std.debug.print("Error: Invalid base64 content\n", .{});
             return FileCmdError.ResponseError;
         };
-        defer parsed.deinit();
+        defer allocator.free(decoded);
 
-        if (!parsed.value.ok) {
-            if (parsed.value.@"error") |err| {
-                std.debug.print(
-                    "Error: {s}: {s}\n",
-                    .{ err.code, err.message },
-                );
-            }
-            return FileCmdError.ResponseError;
+        // Output content to stdout
+        Io.File.stdout().writeStreamingAll(io, decoded) catch {};
+        if (result.truncated) {
+            std.debug.print("\n[truncated]\n", .{});
         }
-
-        if (parsed.value.result) |result| {
-            // Decode base64 content
-            const decoded = protocol.decodeBase64(
-                allocator,
-                result.content,
-            ) catch {
-                std.debug.print("Error: Invalid base64 content\n", .{});
-                return FileCmdError.ResponseError;
-            };
-            defer allocator.free(decoded);
-
-            // Output content to stdout
-            Io.File.stdout().writeStreamingAll(io, decoded) catch {};
-            if (result.truncated) {
-                std.debug.print("\n[truncated]\n", .{});
-            }
-        }
-    } else {
-        std.debug.print("Error: Request timed out\n", .{});
-        return FileCmdError.RequestTimeout;
     }
 }
 
@@ -208,6 +193,7 @@ pub fn ls(
     io: Io,
     args: []const [:0]const u8,
     home: ?[]const u8,
+    environ: std.process.Environ,
 ) FileCmdError!void {
     var config = FileConfig{};
     var depth: u8 = 1;
@@ -217,13 +203,7 @@ pub fn ls(
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--nats") or std.mem.eql(u8, arg, "-n")) {
-            if (i + 1 >= args.len) return FileCmdError.InvalidArgs;
-            i += 1;
-            config.nats_url = args[i];
-        } else if (std.mem.eql(u8, arg, "--token-dir") or
-            std.mem.eql(u8, arg, "-d"))
-        {
+        if (std.mem.eql(u8, arg, "--token-dir") or std.mem.eql(u8, arg, "-d")) {
             if (i + 1 >= args.len) return FileCmdError.InvalidArgs;
             i += 1;
             config.token_dir = args[i];
@@ -284,18 +264,6 @@ pub fn ls(
         return FileCmdError.TokenNotFound;
     };
 
-    // Connect to NATS
-    const client = nats.Client.connect(
-        allocator,
-        io,
-        config.nats_url,
-        .{ .name = "clawgate-cli" },
-    ) catch {
-        std.debug.print("Error: Failed to connect to NATS\n", .{});
-        return FileCmdError.ConnectionFailed;
-    };
-    defer client.deinit(allocator);
-
     // Build request
     const request = buildRequest(allocator, io, token.raw, "list", .{
         .path = config.path.?,
@@ -303,82 +271,85 @@ pub fn ls(
     }) catch return FileCmdError.OutOfMemory;
     defer allocator.free(request);
 
-    // Send request
-    const reply = client.request(
+    // Send request via IPC to agent daemon
+    const response = ipc_client.sendRequest(
         allocator,
-        "clawgate.req.files.list",
+        environ,
         request,
-        5000,
-    ) catch {
-        std.debug.print("Error: Request failed\n", .{});
-        return FileCmdError.RequestFailed;
-    };
-
-    if (reply) |r| {
-        defer r.deinit(allocator);
-
-        // Parse response
-        const parsed = std.json.parseFromSlice(
-            struct {
-                ok: bool,
-                result: ?struct {
-                    entries: []const struct {
-                        name: []const u8,
-                        type: []const u8,
-                        size: ?usize = null,
-                    },
-                } = null,
-                @"error": ?struct {
-                    code: []const u8,
-                    message: []const u8,
-                } = null,
-            },
-            allocator,
-            r.data,
-            .{ .ignore_unknown_fields = true },
-        ) catch {
-            std.debug.print("Error: Invalid response\n", .{});
-            return FileCmdError.ResponseError;
-        };
-        defer parsed.deinit();
-
-        if (!parsed.value.ok) {
-            if (parsed.value.@"error") |err| {
+    ) catch |err| {
+        switch (err) {
+            ipc_client.IpcError.DaemonNotRunning => {
+                std.debug.print("Error: Agent daemon not running\n", .{});
                 std.debug.print(
-                    "Error: {s}: {s}\n",
-                    .{ err.code, err.message },
+                    "Start the agent daemon first: clawgate --mode agent\n",
+                    .{},
                 );
-            }
-            return FileCmdError.ResponseError;
+                return FileCmdError.NotConnected;
+            },
+            ipc_client.IpcError.OutOfMemory => return FileCmdError.OutOfMemory,
+            else => {
+                std.debug.print("Error: Request failed\n", .{});
+                return FileCmdError.RequestFailed;
+            },
         }
+    };
+    defer allocator.free(response);
 
-        if (parsed.value.result) |result| {
-            for (result.entries) |entry| {
-                if (long_format) {
-                    const type_char: u8 = if (std.mem.eql(
-                        u8,
-                        entry.type,
-                        "dir",
-                    )) 'd' else '-';
-                    if (entry.size) |sz| {
-                        std.debug.print(
-                            "{c} {:>10} {s}\n",
-                            .{ type_char, sz, entry.name },
-                        );
-                    } else {
-                        std.debug.print(
-                            "{c} {:>10} {s}\n",
-                            .{ type_char, @as(usize, 0), entry.name },
-                        );
-                    }
+    // Parse response
+    const parsed = std.json.parseFromSlice(
+        struct {
+            ok: bool,
+            result: ?struct {
+                entries: []const struct {
+                    name: []const u8,
+                    type: []const u8,
+                    size: ?usize = null,
+                },
+            } = null,
+            @"error": ?struct {
+                code: []const u8,
+                message: []const u8,
+            } = null,
+        },
+        allocator,
+        response,
+        .{ .ignore_unknown_fields = true },
+    ) catch {
+        std.debug.print("Error: Invalid response\n", .{});
+        return FileCmdError.ResponseError;
+    };
+    defer parsed.deinit();
+
+    if (!parsed.value.ok) {
+        if (parsed.value.@"error") |err| {
+            std.debug.print("Error: {s}: {s}\n", .{ err.code, err.message });
+        }
+        return FileCmdError.ResponseError;
+    }
+
+    if (parsed.value.result) |result| {
+        for (result.entries) |entry| {
+            if (long_format) {
+                const type_char: u8 = if (std.mem.eql(
+                    u8,
+                    entry.type,
+                    "dir",
+                )) 'd' else '-';
+                if (entry.size) |sz| {
+                    std.debug.print(
+                        "{c} {:>10} {s}\n",
+                        .{ type_char, sz, entry.name },
+                    );
                 } else {
-                    std.debug.print("{s}\n", .{entry.name});
+                    std.debug.print(
+                        "{c} {:>10} {s}\n",
+                        .{ type_char, @as(usize, 0), entry.name },
+                    );
                 }
+            } else {
+                std.debug.print("{s}\n", .{entry.name});
             }
         }
-    } else {
-        std.debug.print("Error: Request timed out\n", .{});
-        return FileCmdError.RequestTimeout;
     }
 }
 
@@ -388,6 +359,7 @@ pub fn write(
     io: Io,
     args: []const [:0]const u8,
     home: ?[]const u8,
+    environ: std.process.Environ,
 ) FileCmdError!void {
     var config = FileConfig{};
     var content: ?[]const u8 = null;
@@ -397,13 +369,7 @@ pub fn write(
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--nats") or std.mem.eql(u8, arg, "-n")) {
-            if (i + 1 >= args.len) return FileCmdError.InvalidArgs;
-            i += 1;
-            config.nats_url = args[i];
-        } else if (std.mem.eql(u8, arg, "--token-dir") or
-            std.mem.eql(u8, arg, "-d"))
-        {
+        if (std.mem.eql(u8, arg, "--token-dir") or std.mem.eql(u8, arg, "-d")) {
             if (i + 1 >= args.len) return FileCmdError.InvalidArgs;
             i += 1;
             config.token_dir = args[i];
@@ -493,18 +459,6 @@ pub fn write(
         return FileCmdError.TokenNotFound;
     };
 
-    // Connect to NATS
-    const client = nats.Client.connect(
-        allocator,
-        io,
-        config.nats_url,
-        .{ .name = "clawgate-cli" },
-    ) catch {
-        std.debug.print("Error: Failed to connect to NATS\n", .{});
-        return FileCmdError.ConnectionFailed;
-    };
-    defer client.deinit(allocator);
-
     // Build request
     const request = buildRequest(allocator, io, token.raw, "write", .{
         .path = config.path.?,
@@ -513,58 +467,61 @@ pub fn write(
     }) catch return FileCmdError.OutOfMemory;
     defer allocator.free(request);
 
-    // Send request
-    const reply = client.request(
+    // Send request via IPC to agent daemon
+    const response = ipc_client.sendRequest(
         allocator,
-        "clawgate.req.files.write",
+        environ,
         request,
-        5000,
-    ) catch {
-        std.debug.print("Error: Request failed\n", .{});
-        return FileCmdError.RequestFailed;
-    };
-
-    if (reply) |r| {
-        defer r.deinit(allocator);
-
-        // Parse response
-        const parsed = std.json.parseFromSlice(
-            struct {
-                ok: bool,
-                result: ?struct { bytes_written: usize } = null,
-                @"error": ?struct {
-                    code: []const u8,
-                    message: []const u8,
-                } = null,
-            },
-            allocator,
-            r.data,
-            .{ .ignore_unknown_fields = true },
-        ) catch {
-            std.debug.print("Error: Invalid response\n", .{});
-            return FileCmdError.ResponseError;
-        };
-        defer parsed.deinit();
-
-        if (!parsed.value.ok) {
-            if (parsed.value.@"error") |err| {
+    ) catch |err| {
+        switch (err) {
+            ipc_client.IpcError.DaemonNotRunning => {
+                std.debug.print("Error: Agent daemon not running\n", .{});
                 std.debug.print(
-                    "Error: {s}: {s}\n",
-                    .{ err.code, err.message },
+                    "Start the agent daemon first: clawgate --mode agent\n",
+                    .{},
                 );
-            }
-            return FileCmdError.ResponseError;
+                return FileCmdError.NotConnected;
+            },
+            ipc_client.IpcError.OutOfMemory => return FileCmdError.OutOfMemory,
+            else => {
+                std.debug.print("Error: Request failed\n", .{});
+                return FileCmdError.RequestFailed;
+            },
         }
+    };
+    defer allocator.free(response);
 
-        if (parsed.value.result) |result| {
-            std.debug.print(
-                "Wrote {d} bytes to {s}\n",
-                .{ result.bytes_written, config.path.? },
-            );
+    // Parse response
+    const parsed = std.json.parseFromSlice(
+        struct {
+            ok: bool,
+            result: ?struct { bytes_written: usize } = null,
+            @"error": ?struct {
+                code: []const u8,
+                message: []const u8,
+            } = null,
+        },
+        allocator,
+        response,
+        .{ .ignore_unknown_fields = true },
+    ) catch {
+        std.debug.print("Error: Invalid response\n", .{});
+        return FileCmdError.ResponseError;
+    };
+    defer parsed.deinit();
+
+    if (!parsed.value.ok) {
+        if (parsed.value.@"error") |err| {
+            std.debug.print("Error: {s}: {s}\n", .{ err.code, err.message });
         }
-    } else {
-        std.debug.print("Error: Request timed out\n", .{});
-        return FileCmdError.RequestTimeout;
+        return FileCmdError.ResponseError;
+    }
+
+    if (parsed.value.result) |result| {
+        std.debug.print(
+            "Wrote {d} bytes to {s}\n",
+            .{ result.bytes_written, config.path.? },
+        );
     }
 }
 
@@ -574,6 +531,7 @@ pub fn stat(
     io: Io,
     args: []const [:0]const u8,
     home: ?[]const u8,
+    environ: std.process.Environ,
 ) FileCmdError!void {
     var config = FileConfig{};
     var show_json = false;
@@ -582,13 +540,7 @@ pub fn stat(
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--nats") or std.mem.eql(u8, arg, "-n")) {
-            if (i + 1 >= args.len) return FileCmdError.InvalidArgs;
-            i += 1;
-            config.nats_url = args[i];
-        } else if (std.mem.eql(u8, arg, "--token-dir") or
-            std.mem.eql(u8, arg, "-d"))
-        {
+        if (std.mem.eql(u8, arg, "--token-dir") or std.mem.eql(u8, arg, "-d")) {
             if (i + 1 >= args.len) return FileCmdError.InvalidArgs;
             i += 1;
             config.token_dir = args[i];
@@ -645,18 +597,6 @@ pub fn stat(
         return FileCmdError.TokenNotFound;
     };
 
-    // Connect to NATS
-    const client = nats.Client.connect(
-        allocator,
-        io,
-        config.nats_url,
-        .{ .name = "clawgate-cli" },
-    ) catch {
-        std.debug.print("Error: Failed to connect to NATS\n", .{});
-        return FileCmdError.ConnectionFailed;
-    };
-    defer client.deinit(allocator);
-
     // Build request
     const request = buildRequest(
         allocator,
@@ -667,68 +607,71 @@ pub fn stat(
     ) catch return FileCmdError.OutOfMemory;
     defer allocator.free(request);
 
-    // Send request
-    const reply = client.request(
+    // Send request via IPC to agent daemon
+    const response = ipc_client.sendRequest(
         allocator,
-        "clawgate.req.files.stat",
+        environ,
         request,
-        5000,
-    ) catch {
-        std.debug.print("Error: Request failed\n", .{});
-        return FileCmdError.RequestFailed;
-    };
-
-    if (reply) |r| {
-        defer r.deinit(allocator);
-
-        // Parse response
-        const parsed = std.json.parseFromSlice(
-            struct {
-                ok: bool,
-                result: ?struct {
-                    exists: bool,
-                    type: []const u8,
-                    size: usize,
-                    modified: []const u8,
-                } = null,
-                @"error": ?struct {
-                    code: []const u8,
-                    message: []const u8,
-                } = null,
-            },
-            allocator,
-            r.data,
-            .{ .ignore_unknown_fields = true },
-        ) catch {
-            std.debug.print("Error: Invalid response\n", .{});
-            return FileCmdError.ResponseError;
-        };
-        defer parsed.deinit();
-
-        if (!parsed.value.ok) {
-            if (parsed.value.@"error") |err| {
+    ) catch |err| {
+        switch (err) {
+            ipc_client.IpcError.DaemonNotRunning => {
+                std.debug.print("Error: Agent daemon not running\n", .{});
                 std.debug.print(
-                    "Error: {s}: {s}\n",
-                    .{ err.code, err.message },
+                    "Start the agent daemon first: clawgate --mode agent\n",
+                    .{},
                 );
-            }
-            return FileCmdError.ResponseError;
+                return FileCmdError.NotConnected;
+            },
+            ipc_client.IpcError.OutOfMemory => return FileCmdError.OutOfMemory,
+            else => {
+                std.debug.print("Error: Request failed\n", .{});
+                return FileCmdError.RequestFailed;
+            },
         }
+    };
+    defer allocator.free(response);
 
-        if (parsed.value.result) |result| {
-            if (show_json) {
-                std.debug.print("{s}\n", .{r.data});
-            } else {
-                std.debug.print("  Path:     {s}\n", .{config.path.?});
-                std.debug.print("  Exists:   {}\n", .{result.exists});
-                std.debug.print("  Type:     {s}\n", .{result.type});
-                std.debug.print("  Size:     {d}\n", .{result.size});
-                std.debug.print("  Modified: {s}\n", .{result.modified});
-            }
+    // Parse response
+    const parsed = std.json.parseFromSlice(
+        struct {
+            ok: bool,
+            result: ?struct {
+                exists: bool,
+                type: []const u8,
+                size: usize,
+                modified: []const u8,
+            } = null,
+            @"error": ?struct {
+                code: []const u8,
+                message: []const u8,
+            } = null,
+        },
+        allocator,
+        response,
+        .{ .ignore_unknown_fields = true },
+    ) catch {
+        std.debug.print("Error: Invalid response\n", .{});
+        return FileCmdError.ResponseError;
+    };
+    defer parsed.deinit();
+
+    if (!parsed.value.ok) {
+        if (parsed.value.@"error") |err| {
+            std.debug.print("Error: {s}: {s}\n", .{ err.code, err.message });
         }
-    } else {
-        std.debug.print("Error: Request timed out\n", .{});
-        return FileCmdError.RequestTimeout;
+        return FileCmdError.ResponseError;
+    }
+
+    if (parsed.value.result) |result| {
+        if (show_json) {
+            std.debug.print("{s}\n", .{response});
+        } else {
+            std.debug.print("  Path:     {s}\n", .{config.path.?});
+            std.debug.print("  Exists:   {}\n", .{result.exists});
+            std.debug.print("  Type:     {s}\n", .{result.type});
+            std.debug.print("  Size:     {d}\n", .{result.size});
+            std.debug.print("  Modified: {s}\n", .{result.modified});
+        }
     }
 }
 
@@ -819,8 +762,9 @@ fn printCatUsage() void {
         \\
         \\Read and output file content.
         \\
+        \\Requires the agent daemon to be running and connected to a resource.
+        \\
         \\Options:
-        \\  -n, --nats <url>      NATS server URL
         \\  -d, --token-dir <dir> Token directory
         \\      --offset <n>      Start reading at byte offset
         \\      --length <n>      Maximum bytes to read
@@ -836,8 +780,9 @@ fn printLsUsage() void {
         \\
         \\List directory contents.
         \\
+        \\Requires the agent daemon to be running and connected to a resource.
+        \\
         \\Options:
-        \\  -n, --nats <url>      NATS server URL
         \\  -d, --token-dir <dir> Token directory
         \\      --depth <n>       Listing depth (default: 1)
         \\  -l                    Long format with sizes
@@ -853,8 +798,9 @@ fn printWriteUsage() void {
         \\
         \\Write content to a file. Content from stdin if not specified.
         \\
+        \\Requires the agent daemon to be running and connected to a resource.
+        \\
         \\Options:
-        \\  -n, --nats <url>      NATS server URL
         \\  -d, --token-dir <dir> Token directory
         \\  -c, --content <text>  Content to write
         \\  -a, --append          Append to file
@@ -875,8 +821,9 @@ fn printStatUsage() void {
         \\
         \\Get file or directory metadata.
         \\
+        \\Requires the agent daemon to be running and connected to a resource.
+        \\
         \\Options:
-        \\  -n, --nats <url>      NATS server URL
         \\  -d, --token-dir <dir> Token directory
         \\      --json            Output as JSON
         \\  -h, --help            Show this help
@@ -890,7 +837,8 @@ fn printStatUsage() void {
 test "buildRequest creates valid JSON" {
     const allocator = std.testing.allocator;
 
-    var threaded: std.Io.Threaded = .init_single_threaded;
+    var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
     const io = threaded.io();
 
     const req = try buildRequest(
