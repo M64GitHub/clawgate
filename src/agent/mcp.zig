@@ -842,7 +842,9 @@ fn parseResponse(allocator: Allocator, data: []const u8) !protocol.Response {
                     return protocol.Response{
                         .id = "",
                         .ok = true,
-                        .result = .{ .write = .{ .bytes_written = bytes_written } },
+                        .result = .{
+                            .write = .{ .bytes_written = bytes_written },
+                        },
                     };
                 } else if (obj.get("entries") != null) {
                     const entries_val = obj.get("entries").?;
@@ -850,7 +852,8 @@ fn parseResponse(allocator: Allocator, data: []const u8) !protocol.Response {
                         .array => |a| a,
                         else => return error.InvalidResponse,
                     };
-                    var entries: std.ArrayListUnmanaged(protocol.Entry) = .empty;
+                    var entries: std.ArrayListUnmanaged(protocol.Entry) =
+                        .empty;
                     errdefer {
                         for (entries.items) |e| allocator.free(e.name);
                         entries.deinit(allocator);
@@ -894,7 +897,9 @@ fn parseResponse(allocator: Allocator, data: []const u8) !protocol.Response {
                         .id = "",
                         .ok = true,
                         .result = .{
-                            .list = .{ .entries = try entries.toOwnedSlice(allocator) },
+                            .list = .{
+                                .entries = try entries.toOwnedSlice(allocator),
+                            },
                         },
                     };
                 } else if (obj.get("exists") != null) {

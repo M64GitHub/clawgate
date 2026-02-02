@@ -237,9 +237,7 @@ fn executeList(
     io: Io,
     req: protocol.Request,
 ) ![]const u8 {
-    const depth = req.params.depth orelse 1;
-
-    const entries = try files.listDir(allocator, io, req.params.path, depth);
+    const entries = try files.listDir(allocator, io, req.params.path);
     defer files.freeListResult(allocator, entries);
 
     return protocol.formatSuccess(allocator, req.id, .{

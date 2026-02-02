@@ -211,8 +211,16 @@ fn acceptAndHandle(
     var keypair = e2e.KeyPair.generate(io);
     defer keypair.deinit();
 
-    const request_json = conn.recv(allocator) catch {
-        std.log.warn("Failed to receive handshake request", .{});
+    const request_json = tcp.recvWithTimeout(
+        &conn,
+        allocator,
+        tcp.HANDSHAKE_TIMEOUT_MS,
+    ) catch |err| {
+        if (err == tcp.TcpError.Timeout) {
+            std.log.warn("Handshake timeout", .{});
+        } else {
+            std.log.warn("Failed to receive handshake request", .{});
+        }
         return DaemonError.HandshakeFailed;
     };
     defer allocator.free(request_json);

@@ -93,11 +93,15 @@ fn connectAndServe(
         .{ config.connect_addr, config.connect_port },
     );
 
-    var conn = tcp.connectTo(
+    var conn = tcp.connectWithTimeout(
         io,
         config.connect_addr,
         config.connect_port,
-    ) catch {
+        tcp.CONNECT_TIMEOUT_MS,
+    ) catch |err| {
+        if (err == tcp.TcpError.Timeout) {
+            std.log.warn("Connection timeout", .{});
+        }
         return DaemonError.ConnectionFailed;
     };
     defer conn.close();
@@ -125,8 +129,16 @@ fn connectAndServe(
         return DaemonError.HandshakeFailed;
     };
 
-    const response_json = conn.recv(allocator) catch {
-        std.log.warn("Failed to receive handshake response", .{});
+    const response_json = tcp.recvWithTimeout(
+        &conn,
+        allocator,
+        tcp.HANDSHAKE_TIMEOUT_MS,
+    ) catch |err| {
+        if (err == tcp.TcpError.Timeout) {
+            std.log.warn("Handshake timeout", .{});
+        } else {
+            std.log.warn("Failed to receive handshake response", .{});
+        }
         return DaemonError.HandshakeFailed;
     };
     defer allocator.free(response_json);

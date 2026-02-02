@@ -206,6 +206,7 @@ pub fn parse(
                     &config.resource,
                     kv,
                     &forbidden_list,
+                    home,
                 );
             },
             .agent => {
@@ -358,9 +359,10 @@ fn applyResourceConfig(
     config: *ResourceConfig,
     kv: KeyValue,
     forbidden_list: *std.ArrayListUnmanaged([]const u8),
+    home: []const u8,
 ) !void {
     if (std.mem.eql(u8, kv.key, "forbidden_path")) {
-        const path = allocator.dupe(u8, kv.value) catch {
+        const path = expandAndDupe(allocator, kv.value, home) catch {
             return ConfigError.OutOfMemory;
         };
         forbidden_list.append(allocator, path) catch {
@@ -548,7 +550,7 @@ test "parse simple config" {
     );
 }
 
-test "parse forbidden paths" {
+test "parse forbidden paths with tilde expansion" {
     const allocator = std.testing.allocator;
 
     const content =
@@ -573,8 +575,9 @@ test "parse forbidden paths" {
         "/root/**",
         config.resource.forbidden_paths[1],
     );
+    // Tilde should now be expanded to home directory
     try std.testing.expectEqualStrings(
-        "~/.secret/**",
+        "/home/user/.secret/**",
         config.resource.forbidden_paths[2],
     );
 }

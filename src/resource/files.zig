@@ -188,16 +188,13 @@ pub fn writeFile(
     }
 }
 
-/// Lists directory contents.
+/// Lists directory contents (single level only).
 /// Caller owns returned entries array and all strings within.
 pub fn listDir(
     allocator: Allocator,
     io: Io,
     path: []const u8,
-    depth: u8,
 ) FileError![]protocol.Entry {
-    _ = depth;
-
     const dir = Dir.openDir(
         .cwd(),
         io,
@@ -500,7 +497,7 @@ test "list directory" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const entries = try listDir(allocator, io, "/tmp", 1);
+    const entries = try listDir(allocator, io, "/tmp");
     defer freeListResult(allocator, entries);
 
     try std.testing.expect(entries.len > 0);
@@ -718,7 +715,7 @@ test "list nonexistent directory returns error" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const result = listDir(allocator, io, "/tmp/nonexistent_dir_12345", 1);
+    const result = listDir(allocator, io, "/tmp/nonexistent_dir_12345");
     try std.testing.expectError(FileError.FileNotFound, result);
 }
 
@@ -737,7 +734,7 @@ test "list file as directory returns error" {
     }
     defer Dir.deleteFile(.cwd(), io, test_path) catch {};
 
-    const result = listDir(allocator, io, test_path, 1);
+    const result = listDir(allocator, io, test_path);
     try std.testing.expectError(FileError.NotADirectory, result);
 }
 
@@ -857,13 +854,13 @@ test "list directory - symlink directory rejected" {
     // Listing via symlink should fail when FOLLOW_SYMLINKS is false
     // Note: depending on platform, may return NotADirectory or IsSymlink
     if (FOLLOW_SYMLINKS) {
-        const result = listDir(allocator, io, link_path, 1);
+        const result = listDir(allocator, io, link_path);
         if (result) |entries| {
             freeListResult(allocator, entries);
         } else |_| {}
     } else {
         // Either error is acceptable - both prevent symlink traversal
-        const result = listDir(allocator, io, link_path, 1);
+        const result = listDir(allocator, io, link_path);
         if (result) |entries| {
             freeListResult(allocator, entries);
             return error.TestUnexpectedResult;

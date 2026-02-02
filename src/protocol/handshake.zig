@@ -203,15 +203,16 @@ pub const EncryptedConnection = struct {
     }
 };
 
-/// Generates a random session ID (e.g., "sess_abc123def456").
-pub fn generateSessionId(io: Io) [21]u8 {
-    var result: [21]u8 = undefined;
+/// Generates a random session ID (e.g., "sess_abc123def456...").
+/// Uses 128 bits (16 bytes) of entropy for security.
+pub fn generateSessionId(io: Io) [37]u8 {
+    var result: [37]u8 = undefined;
 
-    // Copy prefix
+    // Copy prefix "sess_" (5 chars)
     @memcpy(result[0..SESSION_PREFIX.len], SESSION_PREFIX);
 
-    // Generate 16 random bytes and hex-encode to 16 chars
-    var random_bytes: [8]u8 = undefined;
+    // Generate 16 random bytes (128 bits) and hex-encode to 32 chars
+    var random_bytes: [16]u8 = undefined;
     io.random(&random_bytes);
 
     const hex_chars = "0123456789abcdef";
@@ -316,8 +317,8 @@ test "session ID format validation" {
     // Verify prefix
     try std.testing.expectEqualStrings(SESSION_PREFIX, session_id[0..SESSION_PREFIX.len]);
 
-    // Verify length (5 prefix + 16 hex chars = 21)
-    try std.testing.expectEqual(@as(usize, 21), session_id.len);
+    // Verify length (5 prefix + 32 hex chars = 37)
+    try std.testing.expectEqual(@as(usize, 37), session_id.len);
 
     // Verify hex chars
     for (session_id[SESSION_PREFIX.len..]) |c| {

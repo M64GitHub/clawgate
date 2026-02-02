@@ -32,7 +32,13 @@ pub const TcpError = error{
     ReadFailed,
     WriteFailed,
     OutOfMemory,
+    Timeout,
 };
+
+/// Timeout constants for DoS protection.
+pub const CONNECT_TIMEOUT_MS: u64 = 10_000;
+pub const HANDSHAKE_TIMEOUT_MS: u64 = 30_000;
+pub const MESSAGE_TIMEOUT_MS: u64 = 60_000;
 
 /// A TCP connection with length-prefixed message framing.
 pub const Connection = struct {
@@ -198,6 +204,86 @@ pub fn connectTo(io: Io, host: []const u8, port: u16) TcpError!Connection {
     };
 
     return Connection.init(stream, io);
+}
+
+/// Connects to a remote host with a timeout.
+pub fn connectWithTimeout(
+    io: Io,
+    host: []const u8,
+    port: u16,
+    timeout_ms: u64,
+) TcpError!Connection {
+    var conn_future = io.async(doConnect, .{ io, host, port });
+
+    var timeout_future = io.async(sleepForTimeout, .{ io, timeout_ms });
+
+    const result = io.select(.{
+        .conn = &conn_future,
+        .timeout = &timeout_future,
+    }) catch {
+        _ = conn_future.cancel(io) catch {};
+        timeout_future.cancel(io);
+        return TcpError.ConnectFailed;
+    };
+
+    switch (result) {
+        .conn => |conn_result| {
+            timeout_future.cancel(io);
+            return conn_result;
+        },
+        .timeout => {
+            _ = conn_future.cancel(io) catch {};
+            return TcpError.Timeout;
+        },
+    }
+}
+
+/// Helper for async connect.
+fn doConnect(io: Io, host: []const u8, port: u16) TcpError!Connection {
+    return connectTo(io, host, port);
+}
+
+/// Helper for timeout sleep.
+fn sleepForTimeout(io: Io, ms: u64) void {
+    io.sleep(.fromMilliseconds(@intCast(ms)), .awake) catch {};
+}
+
+/// Receives a message with timeout. Returns Timeout error if exceeded.
+pub fn recvWithTimeout(
+    conn: *Connection,
+    allocator: Allocator,
+    timeout_ms: u64,
+) TcpError![]u8 {
+    const io = conn.io;
+
+    var recv_future = io.async(doRecv, .{ conn, allocator });
+
+    var timeout_future = io.async(sleepForTimeout, .{ io, timeout_ms });
+
+    const result = io.select(.{
+        .data = &recv_future,
+        .timeout = &timeout_future,
+    }) catch {
+        if (recv_future.cancel(io)) |data| allocator.free(data) else |_| {}
+        timeout_future.cancel(io);
+        return TcpError.ConnectionClosed;
+    };
+
+    switch (result) {
+        .data => |recv_result| {
+            timeout_future.cancel(io);
+            return recv_result;
+        },
+        .timeout => {
+            if (recv_future.cancel(io)) |data| allocator.free(data) else |_| {}
+            return TcpError.Timeout;
+        },
+    }
+}
+
+/// Helper for async recv.
+fn doRecv(conn: *Connection, allocator: Allocator) TcpError![]u8 {
+    return conn.recv(allocator);
 }
 
 test "length prefix encode/decode" {
