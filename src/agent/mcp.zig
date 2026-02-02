@@ -799,7 +799,7 @@ fn sendNatsRequest(
 
     if (content) |c| {
         try pw.writeAll(",\"content\":\"");
-        try writeJsonEscaped(pw, c);
+        try protocol.writeBase64Encoded(pw, c);
         try pw.writeAll("\"");
     }
 
@@ -882,11 +882,15 @@ fn parseNatsResponse(
             .object => |obj| {
                 // Determine result type by fields present
                 if (obj.get("content") != null) {
-                    // Read result
-                    const content_str = switch (obj.get("content").?) {
-                        .string => |s| try allocator.dupe(u8, s),
+                    // Read result - decode base64 content
+                    const encoded = switch (obj.get("content").?) {
+                        .string => |s| s,
                         else => return error.InvalidResponse,
                     };
+                    const content_str = protocol.decodeBase64(
+                        allocator,
+                        encoded,
+                    ) catch return error.InvalidResponse;
                     const size_val = obj.get("size") orelse {
                         allocator.free(content_str);
                         return error.InvalidResponse;

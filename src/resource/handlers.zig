@@ -18,6 +18,7 @@ pub const ErrorCode = struct {
     pub const SCOPE_VIOLATION = "SCOPE_VIOLATION";
     pub const INVALID_OP = "INVALID_OP";
     pub const INVALID_PATH = "INVALID_PATH";
+    pub const INVALID_REQUEST = "INVALID_REQUEST";
     pub const FILE_NOT_FOUND = "FILE_NOT_FOUND";
     pub const ACCESS_DENIED = "ACCESS_DENIED";
     pub const FILE_TOO_LARGE = "FILE_TOO_LARGE";
@@ -201,8 +202,22 @@ fn executeWrite(
     io: Io,
     req: protocol.Request,
 ) ![]const u8 {
-    const content = req.params.content orelse "";
+    const encoded_content = req.params.content orelse "";
     const mode = files.WriteMode.fromString(req.params.mode);
+
+    // Decode base64 content
+    const content = if (encoded_content.len > 0)
+        protocol.decodeBase64(allocator, encoded_content) catch {
+            return protocol.formatError(
+                allocator,
+                req.id,
+                ErrorCode.INVALID_REQUEST,
+                "Invalid base64 content",
+            );
+        }
+    else
+        try allocator.alloc(u8, 0);
+    defer allocator.free(content);
 
     const bytes_written = try files.writeFile(
         io,
@@ -421,8 +436,10 @@ test "handle valid read request" {
     defer allocator.free(response);
 
     const has_ok = std.mem.indexOf(u8, response, "\"ok\":true");
-    const has_content = std.mem.indexOf(u8, response, test_content);
     try std.testing.expect(has_ok != null);
+
+    // Content is now base64 encoded: "test content" -> "dGVzdCBjb250ZW50"
+    const has_content = std.mem.indexOf(u8, response, "dGVzdCBjb250ZW50");
     try std.testing.expect(has_content != null);
 }
 

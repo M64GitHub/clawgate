@@ -239,14 +239,15 @@ assert_content_equals "/* -> root.txt (direct child)" \
     "$(cat "$ROOT_TXT")" \
     "\"$CLAWGATE\" cat \"$ROOT_TXT\""
 
-# Binary test: verify the command succeeds (content check separate)
-# NOTE: Binary content causes JSON encoding issues - see TEST 8 for details
-log_test "/* -> root.bin (direct child, access check only)"
-if "$CLAWGATE" cat "$ROOT_BIN" >/dev/null 2>&1; then
+# Binary test: verify content via xxd
+log_test "/* -> root.bin (direct child, binary via xxd)"
+EXPECTED_HEX=$(xxd "$ROOT_BIN")
+ACTUAL_HEX=$("$CLAWGATE" cat "$ROOT_BIN" | xxd)
+if [ "$EXPECTED_HEX" = "$ACTUAL_HEX" ]; then
     log_info "  PASS"
 else
-    # Binary handling bug - skip for now, pattern matching is correct
-    log_warn "  SKIP: Binary content JSON encoding issue (known bug)"
+    log_error "  FAIL: Binary content mismatch"
+    TEST_FAILURES=$((TEST_FAILURES + 1))
 fi
 
 assert_failure "/* denies level1/file1.txt (nested)" \
@@ -407,16 +408,15 @@ TOKEN=$("$CLAWGATE" grant --read "$TESTDATA/**")
 "$CLAWGATE" token add "$TOKEN"
 sleep 0.3
 
-# NOTE: Binary file handling has a known JSON encoding issue.
-# Binary content with null bytes or special characters causes "Invalid response".
-# This is a ClawGate bug in the response JSON encoding, not a glob matching issue.
-# The glob pattern matching itself works correctly (tested with text files above).
-log_test "Binary file access (known JSON encoding issue)"
-if "$CLAWGATE" cat "$ROOT_BIN" >/dev/null 2>&1; then
-    log_info "  PASS: Binary content retrieved successfully"
+# Binary file integrity test - verify content matches via xxd
+log_test "Binary file content integrity"
+EXPECTED_HEX=$(xxd "$ROOT_BIN")
+ACTUAL_HEX=$("$CLAWGATE" cat "$ROOT_BIN" | xxd)
+if [ "$EXPECTED_HEX" = "$ACTUAL_HEX" ]; then
+    log_info "  PASS: Binary content matches"
 else
-    log_warn "  SKIP: Binary JSON encoding bug - file access works, response parsing fails"
-    log_warn "        This is a known issue: binary content breaks JSON response"
+    log_error "  FAIL: Binary content mismatch"
+    TEST_FAILURES=$((TEST_FAILURES + 1))
 fi
 
 

@@ -180,8 +180,18 @@ pub fn cat(
         }
 
         if (parsed.value.result) |result| {
+            // Decode base64 content
+            const decoded = protocol.decodeBase64(
+                allocator,
+                result.content,
+            ) catch {
+                std.debug.print("Error: Invalid base64 content\n", .{});
+                return FileCmdError.ResponseError;
+            };
+            defer allocator.free(decoded);
+
             // Output content to stdout
-            Io.File.stdout().writeStreamingAll(io, result.content) catch {};
+            Io.File.stdout().writeStreamingAll(io, decoded) catch {};
             if (result.truncated) {
                 std.debug.print("\n[truncated]\n", .{});
             }
@@ -765,7 +775,7 @@ fn buildRequest(
     if (@hasField(@TypeOf(params), "content")) {
         if (params.content) |c| {
             try writer.writeAll(",\"content\":\"");
-            try writeJsonEscaped(writer, c);
+            try protocol.writeBase64Encoded(writer, c);
             try writer.writeAll("\"");
         }
     }

@@ -10,6 +10,7 @@ pub const ProtocolError = error{
     InvalidJson,
     InvalidOperation,
     MissingField,
+    InvalidBase64,
     OutOfMemory,
 };
 
@@ -176,7 +177,7 @@ pub fn formatResponse(allocator: Allocator, response: Response) ![]const u8 {
         switch (result) {
             .read => |r| {
                 try writer.writeAll("{\"content\":\"");
-                try writeJsonEscaped(writer, r.content);
+                try writeBase64Encoded(writer, r.content);
                 try writer.print(
                     "\",\"size\":{d},\"truncated\":{s}}}",
                     .{ r.size, if (r.truncated) "true" else "false" },
@@ -278,6 +279,27 @@ fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
             },
         }
     }
+}
+
+/// Encodes binary content to base64 and writes to the writer.
+pub fn writeBase64Encoded(writer: anytype, content: []const u8) !void {
+    const encoder = std.base64.standard.Encoder;
+    try encoder.encodeWriter(writer, content);
+}
+
+/// Decodes base64 content to binary. Caller owns returned memory.
+pub fn decodeBase64(allocator: Allocator, encoded: []const u8) ![]u8 {
+    const decoder = std.base64.standard.Decoder;
+    const size = decoder.calcSizeForSlice(encoded) catch {
+        return ProtocolError.InvalidBase64;
+    };
+    const buf = try allocator.alloc(u8, size);
+    errdefer allocator.free(buf);
+    decoder.decode(buf, encoded) catch {
+        allocator.free(buf);
+        return ProtocolError.InvalidBase64;
+    };
+    return buf;
 }
 
 // Tests
@@ -382,7 +404,12 @@ test "format read response" {
     try std.testing.expectEqualStrings("req_1", parsed.value.id);
     try std.testing.expect(parsed.value.ok);
     const result = parsed.value.result;
-    try std.testing.expectEqualStrings("file content", result.content);
+
+    // Content is base64 encoded, decode before comparing
+    const decoded = try decodeBase64(allocator, result.content);
+    defer allocator.free(decoded);
+    try std.testing.expectEqualStrings("file content", decoded);
+
     try std.testing.expectEqual(@as(usize, 12), result.size);
     try std.testing.expect(!result.truncated);
 }
@@ -525,19 +552,20 @@ test "format error response" {
     try std.testing.expectEqualStrings(expected_msg, err.message);
 }
 
-test "json escaping in content" {
+test "base64 encoding special characters in content" {
     const allocator = std.testing.allocator;
 
+    const original = "line1\nline2\twith \"quotes\"";
     const json = try formatSuccess(allocator, "req_6", .{
         .read = .{
-            .content = "line1\nline2\twith \"quotes\"",
+            .content = original,
             .size = 25,
             .truncated = false,
         },
     });
     defer allocator.free(json);
 
-    // Verify it parses correctly with escaped content
+    // Verify it parses correctly with base64 encoded content
     const parsed = try std.json.parseFromSlice(
         struct {
             result: struct { content: []const u8 },
@@ -548,10 +576,10 @@ test "json escaping in content" {
     );
     defer parsed.deinit();
 
-    try std.testing.expectEqualStrings(
-        "line1\nline2\twith \"quotes\"",
-        parsed.value.result.content,
-    );
+    // Content is base64 encoded, decode before comparing
+    const decoded = try decodeBase64(allocator, parsed.value.result.content);
+    defer allocator.free(decoded);
+    try std.testing.expectEqualStrings(original, decoded);
 }
 
 test "round-trip request" {
@@ -568,4 +596,38 @@ test "round-trip request" {
     try std.testing.expectEqualStrings("tok", parsed.value.token);
     try std.testing.expectEqualStrings("read", parsed.value.op);
     try std.testing.expectEqualStrings("/test", parsed.value.params.path);
+}
+
+test "base64 encode/decode round trip" {
+    const allocator = std.testing.allocator;
+
+    const text = "Hello, ClawGate!";
+    var buf: [64]u8 = undefined;
+    const encoded = std.base64.standard.Encoder.encode(&buf, text);
+
+    const decoded = try decodeBase64(allocator, encoded);
+    defer allocator.free(decoded);
+
+    try std.testing.expectEqualStrings(text, decoded);
+}
+
+test "base64 encode/decode binary content" {
+    const allocator = std.testing.allocator;
+
+    // Binary content including null bytes
+    const binary = &[_]u8{ 0x00, 0x01, 0xFF, 0xFE, 0x00, 0x7F };
+    var buf: [16]u8 = undefined;
+    const encoded = std.base64.standard.Encoder.encode(&buf, binary);
+
+    const decoded = try decodeBase64(allocator, encoded);
+    defer allocator.free(decoded);
+
+    try std.testing.expectEqualSlices(u8, binary, decoded);
+}
+
+test "base64 invalid input" {
+    const allocator = std.testing.allocator;
+
+    const result = decodeBase64(allocator, "!!!invalid!!!");
+    try std.testing.expectError(ProtocolError.InvalidBase64, result);
 }

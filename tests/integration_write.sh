@@ -328,21 +328,18 @@ TOKEN=$("$CLAWGATE" grant --read --write "$WRITEABLE/**")
 "$CLAWGATE" token add "$TOKEN"
 sleep 0.3
 
-# NOTE: Binary content with null bytes causes JSON encoding issues.
-# This is a known ClawGate bug - binary data breaks the JSON protocol.
+# Binary content write and verify
 BINARY_FILE="$WRITEABLE/binary.bin"
-log_test "Write binary content (known JSON encoding issue)"
-if printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR' | "$CLAWGATE" write "$BINARY_FILE" 2>/dev/null; then
-    WRITTEN=$(xxd "$BINARY_FILE")
-    EXPECTED=$(printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR' | xxd)
-    if [ "$EXPECTED" = "$WRITTEN" ]; then
-        log_info "  PASS: Binary content matches"
-    else
-        log_error "  FAIL: Binary content mismatch"
-        TEST_FAILURES=$((TEST_FAILURES + 1))
-    fi
+log_test "Write binary content"
+printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR' | "$CLAWGATE" write "$BINARY_FILE"
+
+WRITTEN=$(xxd "$BINARY_FILE")
+EXPECTED=$(printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR' | xxd)
+if [ "$EXPECTED" = "$WRITTEN" ]; then
+    log_info "  PASS: Binary content matches"
 else
-    log_warn "  SKIP: Binary JSON encoding bug - binary content breaks JSON request"
+    log_error "  FAIL: Binary content mismatch"
+    TEST_FAILURES=$((TEST_FAILURES + 1))
 fi
 
 
