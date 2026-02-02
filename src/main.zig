@@ -59,21 +59,37 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, cmd, "mcp-server")) {
         try handleMcpServer(allocator, cmd_args, init.minimal.environ);
     } else if (std.mem.eql(u8, cmd, "grant")) {
-        grant_cmd.grant(allocator, io, cmd_args, home) catch {};
+        grant_cmd.grant(allocator, io, cmd_args, home) catch {
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, cmd, "audit")) {
-        audit_cmd.run(allocator, io, cmd_args) catch {};
+        audit_cmd.run(allocator, io, cmd_args) catch {
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, cmd, "cat")) {
-        file_cmds.cat(allocator, io, cmd_args, home) catch {};
+        file_cmds.cat(allocator, io, cmd_args, home) catch {
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, cmd, "ls")) {
-        file_cmds.ls(allocator, io, cmd_args, home) catch {};
+        file_cmds.ls(allocator, io, cmd_args, home) catch {
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, cmd, "write")) {
-        file_cmds.write(allocator, io, cmd_args, home) catch {};
+        file_cmds.write(allocator, io, cmd_args, home) catch {
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, cmd, "stat")) {
-        file_cmds.stat(allocator, io, cmd_args, home) catch {};
+        file_cmds.stat(allocator, io, cmd_args, home) catch {
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, cmd, "keygen")) {
-        setup.keygen(allocator, io, cmd_args, home) catch {};
+        setup.keygen(allocator, io, cmd_args, home) catch {
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, cmd, "token")) {
-        token_cmd.run(allocator, io, cmd_args, home) catch {};
+        token_cmd.run(allocator, io, cmd_args, home) catch {
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, cmd, "version") or
         std.mem.eql(u8, cmd, "--version") or
         std.mem.eql(u8, cmd, "-v"))
