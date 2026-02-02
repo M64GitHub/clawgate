@@ -196,8 +196,10 @@ pub fn grant(
     };
     defer allocator.free(jwt);
 
-    // Output token
-    std.debug.print("{s}\n", .{jwt});
+    // Output token to stdout (not stderr)
+    const stdout = std.Io.File.stdout();
+    stdout.writeStreamingAll(io, jwt) catch return GrantError.OutOfMemory;
+    stdout.writeStreamingAll(io, "\n") catch return GrantError.OutOfMemory;
 }
 
 /// Parses a TTL string like "1h", "24h", "7d", "3600".
