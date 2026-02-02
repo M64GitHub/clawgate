@@ -460,7 +460,7 @@ test "format stat response" {
             .exists = true,
             .type = "file",
             .size = 4096,
-            .modified = "2024-01-31T10:00:00Z",
+            .modified = "2026-01-31T10:00:00Z",
         },
     });
     defer allocator.free(json);
@@ -486,7 +486,7 @@ test "format stat response" {
     try std.testing.expectEqualStrings("file", parsed.value.result.type);
     try std.testing.expectEqual(@as(usize, 4096), parsed.value.result.size);
     try std.testing.expectEqualStrings(
-        "2024-01-31T10:00:00Z",
+        "2026-01-31T10:00:00Z",
         parsed.value.result.modified,
     );
 }

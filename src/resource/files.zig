@@ -553,6 +553,7 @@ test "format timestamp" {
     defer allocator.free(ts);
 
     try std.testing.expect(ts.len == 20);
+    // Timestamp 1706706000 = 2024-01-31, so expect 2024
     try std.testing.expect(std.mem.startsWith(u8, ts, "2024-"));
 }
 

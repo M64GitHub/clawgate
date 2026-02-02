@@ -231,7 +231,7 @@ fn handleInitialize(allocator: Allocator, id: ?std.json.Value) ![]const u8 {
     try writer.writeAll("{\"jsonrpc\":\"2.0\",");
     try writeId(writer, id);
     try writer.writeAll(",\"result\":{");
-    try writer.writeAll("\"protocolVersion\":\"2024-11-05\",");
+    try writer.writeAll("\"protocolVersion\":\"2026-11-05\",");
     try writer.writeAll("\"capabilities\":{\"tools\":{}},");
     try writer.writeAll("\"serverInfo\":{");
     try writer.writeAll("\"name\":\"clawgate\",");

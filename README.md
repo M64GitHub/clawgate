@@ -224,9 +224,9 @@ Every operation is logged to the `clawgate.audit.*` NATS subjects:
 
 ```bash
 clawgate audit
-# [2024-02-01T10:23:45Z] READ /home/mario/projects/app/main.zig OK (1.2KB, 3ms)
-# [2024-02-01T10:23:47Z] LIST /home/mario/projects/app/ OK (12 entries, 1ms)
-# [2024-02-01T10:24:01Z] READ /home/mario/.ssh/id_rsa DENIED (forbidden path)
+# [2026-02-01T10:23:45Z] READ /home/mario/projects/app/main.zig OK (1.2KB, 3ms)
+# [2026-02-01T10:23:47Z] LIST /home/mario/projects/app/ OK (12 entries, 1ms)
+# [2026-02-01T10:24:01Z] READ /home/mario/.ssh/id_rsa DENIED (forbidden path)
 ```
 
 ---
