@@ -253,7 +253,7 @@ ClawGate is a **security tool**. We take this seriously.
 | Layer | Protection |
 |-------|------------|
 | **Transport** | TLS 1.3 encryption, NKey authentication |
-| **Authentication** | Ed25519 signed tokens (not HMAC) |
+| **Authentication** | Ed25519 signed tokens |
 | **Authorization** | Per-request scope validation |
 | **Path safety** | Canonicalization, traversal protection |
 | **Forbidden paths** | ~/.ssh, ~/.aws, ~/.gnupg - hardcoded, ungrantable |
