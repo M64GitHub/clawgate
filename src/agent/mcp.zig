@@ -8,7 +8,7 @@
 const std = @import("std");
 const nats = @import("nats");
 const tokens = @import("tokens.zig");
-const daemon = @import("daemon.zig");
+const paths = @import("../path.zig");
 const protocol = @import("../protocol/json.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -66,7 +66,7 @@ fn runWithIo(
     home: []const u8,
 ) !void {
     // Expand token directory path
-    const token_dir = try daemon.expandPath(allocator, config.token_dir, home);
+    const token_dir = try paths.expand(allocator, config.token_dir, home);
     defer allocator.free(token_dir);
 
     // Load token store

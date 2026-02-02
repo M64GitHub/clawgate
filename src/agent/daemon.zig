@@ -7,6 +7,7 @@
 const std = @import("std");
 const nats = @import("nats");
 const tokens = @import("tokens.zig");
+const path = @import("../path.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -51,7 +52,7 @@ pub fn runWithIo(
     home: []const u8,
 ) !void {
     // Expand token directory path
-    const token_dir = try expandPath(allocator, config.token_dir, home);
+    const token_dir = try path.expand(allocator, config.token_dir, home);
     defer allocator.free(token_dir);
 
     std.log.info("Loading tokens from {s}", .{token_dir});
@@ -91,69 +92,4 @@ fn keepAliveLoop(io: Io, client: *nats.Client) void {
             std.log.warn("NATS ping failed: {}", .{err});
         };
     }
-}
-
-/// Expands ~ to home directory in path.
-/// The home parameter should come from Threaded.environString("HOME").
-pub fn expandPath(
-    allocator: Allocator,
-    path: []const u8,
-    home: []const u8,
-) ![]const u8 {
-    if (path.len == 0) {
-        return allocator.dupe(u8, path);
-    }
-
-    if (path[0] != '~') {
-        return allocator.dupe(u8, path);
-    }
-
-    if (path.len == 1) {
-        return allocator.dupe(u8, home);
-    }
-
-    // Replace ~ with home directory
-    return std.fmt.allocPrint(allocator, "{s}{s}", .{ home, path[1..] });
-}
-
-// Tests
-
-test "expandPath expands tilde" {
-    const allocator = std.testing.allocator;
-
-    const expanded = try expandPath(
-        allocator,
-        "~/.clawgate/tokens",
-        "/home/user",
-    );
-    defer allocator.free(expanded);
-
-    try std.testing.expectEqualStrings("/home/user/.clawgate/tokens", expanded);
-}
-
-test "expandPath handles absolute paths" {
-    const allocator = std.testing.allocator;
-
-    const expanded = try expandPath(allocator, "/tmp/tokens", "/home/user");
-    defer allocator.free(expanded);
-
-    try std.testing.expectEqualStrings("/tmp/tokens", expanded);
-}
-
-test "expandPath handles tilde only" {
-    const allocator = std.testing.allocator;
-
-    const expanded = try expandPath(allocator, "~", "/home/testuser");
-    defer allocator.free(expanded);
-
-    try std.testing.expectEqualStrings("/home/testuser", expanded);
-}
-
-test "expandPath handles empty path" {
-    const allocator = std.testing.allocator;
-
-    const expanded = try expandPath(allocator, "", "/home/user");
-    defer allocator.free(expanded);
-
-    try std.testing.expectEqualStrings("", expanded);
 }

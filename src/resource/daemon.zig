@@ -8,6 +8,7 @@ const nats = @import("nats");
 const handlers = @import("handlers.zig");
 const crypto = @import("../capability/crypto.zig");
 const protocol = @import("../protocol/json.zig");
+const paths = @import("../path.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -25,16 +26,21 @@ pub const DaemonError = error{
 pub const Config = struct {
     nats_url: []const u8 = DEFAULT_NATS_URL,
     public_key_path: []const u8,
+    environ: std.process.Environ = .empty,
 };
 
 /// Runs the resource daemon with the given configuration.
 /// This function blocks indefinitely, processing requests.
 pub fn run(allocator: Allocator, config: Config) DaemonError!void {
-    var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
+    var threaded: std.Io.Threaded = .init(allocator, .{
+        .environ = config.environ,
+    });
     defer threaded.deinit();
     const io = threaded.io();
 
-    runWithIo(allocator, io, config) catch |err| {
+    const home = threaded.environString("HOME") orelse "/tmp";
+
+    runWithIo(allocator, io, config, home) catch |err| {
         return switch (err) {
             crypto.CryptoError.FileNotFound,
             crypto.CryptoError.ReadError,
@@ -46,9 +52,18 @@ pub fn run(allocator: Allocator, config: Config) DaemonError!void {
 }
 
 /// Internal entry point that accepts an Io instance for testing.
-fn runWithIo(allocator: Allocator, io: Io, config: Config) !void {
-    std.log.info("Loading public key from {s}", .{config.public_key_path});
-    const public_key = try crypto.loadPublicKey(io, config.public_key_path);
+fn runWithIo(
+    allocator: Allocator,
+    io: Io,
+    config: Config,
+    home: []const u8,
+) !void {
+    // Expand public key path
+    const key_path = try paths.expand(allocator, config.public_key_path, home);
+    defer allocator.free(key_path);
+
+    std.log.info("Loading public key from {s}", .{key_path});
+    const public_key = try crypto.loadPublicKey(io, key_path);
 
     std.log.info("Connecting to NATS at {s}", .{config.nats_url});
     const client = nats.Client.connect(

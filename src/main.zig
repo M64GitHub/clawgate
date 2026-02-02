@@ -108,7 +108,7 @@ fn handleModeCommand(
     const remaining_args = if (args.len > 1) args[1..] else &[_][:0]const u8{};
 
     if (std.mem.eql(u8, mode, "resource")) {
-        var public_key_path: []const u8 = "/tmp/clawgate_test_public.key";
+        var public_key_path: []const u8 = "~/.clawgate/keys/public.key";
         var nats_url: []const u8 = "nats://localhost:4222";
 
         var i: usize = 0;
@@ -127,6 +127,7 @@ fn handleModeCommand(
         resource_daemon.run(allocator, .{
             .nats_url = nats_url,
             .public_key_path = public_key_path,
+            .environ = environ,
         }) catch |err| {
             std.debug.print("Resource daemon error: {}\n", .{err});
             return;
