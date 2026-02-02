@@ -66,9 +66,10 @@ pub const Session = struct {
         their_public: [KEY_LENGTH]u8,
         session_id: []const u8,
     ) !Session {
-        const x25519_shared = X25519.scalarmult(my_secret, their_public) catch {
+        var x25519_shared = X25519.scalarmult(my_secret, their_public) catch {
             return E2eError.InvalidPublicKey;
         };
+        defer std.crypto.secureZero(u8, &x25519_shared);
 
         const prk = HkdfSha256.extract(HKDF_SALT, &x25519_shared);
 

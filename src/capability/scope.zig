@@ -116,9 +116,13 @@ pub fn canonicalizePath(
 }
 
 /// Checks if a path is within a base directory.
+/// Empty base returns false (invalid scope).
 pub fn isWithin(base: []const u8, path: []const u8) bool {
     const norm_base = normalizePath(base);
     const norm_path = normalizePath(path);
+
+    // Empty base is invalid - reject
+    if (norm_base.len == 0) return false;
 
     if (!std.mem.startsWith(u8, norm_path, norm_base)) return false;
     if (norm_path.len == norm_base.len) return true;
@@ -450,9 +454,9 @@ test "matches rejects path component boundary attacks" {
 }
 
 test "isWithin handles edge case paths" {
-    // Empty base matches all paths (empty string is prefix of all)
-    // This documents the current behavior
-    try std.testing.expect(isWithin("", "/home/user/file"));
+    // Empty base is invalid - returns false for security
+    try std.testing.expect(!isWithin("", "/home/user/file"));
+    try std.testing.expect(!isWithin("", ""));
 
     // Empty path
     try std.testing.expect(!isWithin("/home", ""));

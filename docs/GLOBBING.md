@@ -103,8 +103,8 @@ Special patterns that operate from the filesystem root.
 
 | Pattern | Behavior |
 |---------|----------|
-| `/**`   | Matches ALL paths, including `/` and empty string |
-| `/*`    | Matches single-level paths including `/` |
+| `/**`   | Matches ALL absolute paths |
+| `/*`    | Matches single-level paths like `/file` |
 
 ### Examples for `/**`
 
@@ -112,15 +112,16 @@ Special patterns that operate from the filesystem root.
 |---------------|---------|
 | `/`           | YES     |
 | `/any/path`   | YES     |
-| (empty)       | YES     |
+| `/a/b/c/d`    | YES     |
 
 ### Examples for `/*`
 
 | Path          | Matches |
 |---------------|---------|
-| `/`           | YES     |
+| `/file`       | YES     |
 | `/toplevel`   | YES     |
 | `/top/nested` | NO      |
+| `/`           | NO      |
 
 ## Path Canonicalization
 
@@ -134,6 +135,7 @@ attacks. This happens automatically in the request handler.
 3. **`..` components resolved**: `/home/user/../other` becomes `/home/other`
 4. **Consecutive slashes collapsed**: `//home///user` becomes `/home/user`
 5. **Root escape rejected**: `/../etc/passwd` returns error
+6. **Empty paths rejected**: Empty string returns error
 
 ### Canonicalization Examples
 
@@ -202,16 +204,26 @@ base directory. This is used internally for scope validation.
 | `/home/m`  | `/home/other`     | false  | Different directory |
 | `/`        | `/any/path`       | true   | Root contains all |
 | `/`        | `/`               | true   | Root contains itself |
+| (empty)    | `/any/path`       | false  | Empty base is invalid |
+| (empty)    | (empty)           | false  | Empty base is invalid |
 
-## Empty String Handling
+**Security note:** Empty base always returns `false` to prevent accidental
+universal access.
+
+## Empty and Invalid Pattern Handling
+
+ClawGate treats empty patterns as invalid to prevent security issues.
 
 | Pattern | Path    | Matches | Reason |
 |---------|---------|---------|--------|
-| `/**`   | (empty) | YES     | Empty prefix matches anything |
-| `/*`    | (empty) | NO      | Requires `/` + something |
-| `/a/**` | (empty) | NO      | Prefix `/a` doesn't match empty |
-| (empty) | (empty) | YES     | Exact match (both empty) |
-| (empty) | `/a`    | NO      | Empty pattern only matches empty |
+| `/**`   | `/a`    | YES     | Root recursive matches all |
+| `/*`    | `/a`    | YES     | Root single-level |
+| `/a/**` | `/a/b`  | YES     | Normal recursive |
+| (empty) | `/a`    | NO      | Empty pattern is invalid |
+| (empty) | (empty) | NO      | Empty pattern is invalid |
+
+**Security note:** An empty scope pattern grants no access. This prevents
+bugs where an accidentally-empty scope would match all paths.
 
 ## Summary Table
 
@@ -228,11 +240,13 @@ base directory. This is used internally for scope validation.
 2. **Path boundaries** prevent `/home/m/**` from matching `/home/mario`
 3. **Symlinks are rejected** at the file operation level (see files.zig)
 4. **Forbidden paths** are checked after canonicalization (see handlers.zig)
+5. **Empty patterns rejected** to prevent universal access bugs
+6. **Tokens expire exactly at exp** (not after) - use `>=` comparison
 
 ## Implementation Reference
 
 The glob matching is implemented in `src/capability/scope.zig`:
 - `matches(pattern, path)` - Main pattern matching function
 - `canonicalizePath(allocator, path)` - Path normalization
-- `isWithin(base, path)` - Directory containment check
+- `isWithin(base, path)` - Directory containment check (rejects empty base)
 - `normalizePath(path)` - Trailing slash removal
