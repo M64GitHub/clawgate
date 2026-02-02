@@ -187,9 +187,9 @@ pub const Token = struct {
 
     /// Checks if the token has expired.
     pub fn isExpired(self: *const Token) bool {
-        const instant = std.time.Instant.now() catch return true;
-        const now: i64 = @intCast(instant.timestamp.sec);
-        return now >= self.payload.exp;
+        const ts = std.posix.clock_gettime(.REALTIME) catch return true;
+        const now: i64 = @intCast(ts.sec);
+        return now > self.payload.exp;
     }
 
     /// Checks if token allows an operation on a path.
@@ -249,8 +249,10 @@ pub fn createToken(
     capabilities: []const Capability,
     ttl_seconds: i64,
 ) ![]const u8 {
-    const instant = std.time.Instant.now() catch return TokenError.OutOfMemory;
-    const now: i64 = @intCast(instant.timestamp.sec);
+    const ts = std.posix.clock_gettime(.REALTIME) catch {
+        return TokenError.OutOfMemory;
+    };
+    const now: i64 = @intCast(ts.sec);
 
     // Generate token ID
     var id_bytes: [12]u8 = undefined;

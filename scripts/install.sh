@@ -1,6 +1,7 @@
-#!/bin/bash
+#!/bin/sh
 # ClawGate installer - https://clawgate.io
 # Usage: curl -sSL https://clawgate.io/install.sh | sh
+
 set -e
 
 VERSION="${CLAWGATE_VERSION:-0.1.0}"
@@ -42,33 +43,21 @@ else
     sudo chmod +x "$INSTALL_DIR/clawgate"
 fi
 
-# Check for NATS server
-if ! command -v nats-server &> /dev/null; then
-    echo ""
-    echo "Warning: NATS server not found!"
-    echo ""
-    echo "ClawGate requires nats-server. Install it:"
-    echo ""
-    if [[ "$OS" == "darwin" ]]; then
-        echo "    brew install nats-server"
-    else
-        echo "    # Debian/Ubuntu:"
-        echo "    sudo apt install nats-server"
-        echo ""
-        echo "    # Or download from:"
-        echo "    https://github.com/nats-io/nats-server/releases"
-    fi
-    echo ""
-fi
-
 echo ""
-echo "ClawGate ${VERSION} installed successfully!"
+echo "! ClawGate ${VERSION} installed successfully !"
 echo ""
-echo "Next steps:"
-echo "  1. clawgate keygen           Generate Ed25519 keys"
-echo "  2. clawgate --mode resource  Start resource daemon (laptop)"
-echo "  3. clawgate grant --read ... Create capability token"
-echo "  4. clawgate --mode agent     Start agent daemon (isolated machine)"
+echo "Quick start (on your laptop):"
+echo "  clawgate keygen"
+echo "  clawgate grant --read '~/projects/**' --ttl 24h > token.txt"
+echo "  scp token.txt ~/.clawgate/keys/public.key agent-machine:"
 echo ""
-echo "Documentation: https://clawgate.io/docs"
+echo "Quick start (on agent machine):"
+echo "  clawgate token add \"\$(cat token.txt)\""
+echo "  clawgate --mode agent"
+echo ""
+echo "Then connect from laptop:"
+echo "  clawgate --mode resource --connect <agent-ip>:4223"
+echo ""
+echo "Docs:   https://clawgate.io/docs"
+echo "GitHub: https://github.com/M64GitHub/clawgate"
 echo ""
