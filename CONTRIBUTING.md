@@ -13,14 +13,32 @@ Thank you for your interest in contributing to ClawGate!
 ## Development Setup
 
 ```bash
-# Start NATS server (required for integration tests)
-nats-server
-
 # Build and run
 zig build run -- --help
 
 # Run tests
 zig build test
+```
+
+## Integration Testing
+
+To test the full system, run the daemons in separate terminals:
+
+```bash
+# Terminal 1: Generate keys (first time only)
+zig build run -- keygen
+
+# Terminal 2: Start agent daemon
+zig build run -- --mode agent
+
+# Terminal 3: Start resource daemon (connects to agent)
+zig build run -- --mode resource --connect localhost:4223
+
+# Terminal 4: Grant access and test
+zig build run -- grant --read /tmp --ttl 1h
+# Copy the token output, then:
+zig build run -- token add "<token>"
+zig build run -- ls /tmp
 ```
 
 ## Code Standards
