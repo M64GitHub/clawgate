@@ -15,6 +15,14 @@ Think of it as **SSH keys meet JWT tokens meet capability-based security** - des
 
 <img width="1025" height="1338" alt="image" src="https://github.com/user-attachments/assets/953da1d4-7e3c-4946-b5ee-1e21c9c18a49" />
 
+Resource daemon logs audit events (on private laptop)
+<img width="1897" height="215" alt="image" src="https://github.com/user-attachments/assets/ca2d815c-de59-4cf0-bb3c-814acd63b75a" />
+
+Token list (on isolated agent)
+<img width="1871" height="328" alt="image" src="https://github.com/user-attachments/assets/b0ce0add-34b8-496e-8822-a950f1e2adcc" />
+
+
+
 ## The Problem
 
 You're running [OpenClaw](https://github.com/openclaw/openclaw) (or Claude Code, or any AI agent) on an isolated machine - maybe a Mac Mini, a VPS, or a sandboxed container. **Smart move for security.**
@@ -34,13 +42,13 @@ But now your agent needs to read your project files. Your options?
 
 ClawGate provides **secure, scoped, audited file access** over direct TCP with end-to-end encryption:
 
-<img width="1043" height="1269" alt="image" src="https://github.com/user-attachments/assets/3c6b06c8-1be7-4ea3-9cea-d09222f28419" />
-
 **Key principles:**
 - **Zero trust** - Assumes the agent machine is compromised
 - **Least privilege** - Grant only specific paths, not filesystems
 - **Time-bounded** - Tokens expire (1 hour, 24 hours, 7 days)
 - **Complete audit** - Every operation logged with cryptographic proof
+
+<img width="1043" height="1269" alt="image" src="https://github.com/user-attachments/assets/3c6b06c8-1be7-4ea3-9cea-d09222f28419" />
 
 ## Quick Start
 
