@@ -1,4 +1,3 @@
-[![CI](https://github.com/M64GitHub/clawgate/actions/workflows/ci.yml/badge.svg)](https://github.com/M64GitHub/clawgate/actions)
 [![Release](https://img.shields.io/github/v/release/M64GitHub/clawgate?include_prereleases)](https://github.com/M64GitHub/clawgate/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.16+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
@@ -62,51 +61,54 @@ ClawGate provides **secure, scoped, audited file access** over direct TCP with e
 
 ## Quick Start
 
-### Install
-
+**1. Install** (on both machines):
 ```bash
 curl -sSL https://clawgate.io/install.sh | sh
 ```
-
 Or build from source (requires Zig 0.16+):
-
 ```bash
-git clone https://github.com/M64GitHub/clawgate
-cd clawgate
+git clone https://github.com/M64GitHub/clawgate && cd clawgate
 zig build -Doptimize=ReleaseSafe
 sudo cp zig-out/bin/clawgate /usr/local/bin/
 ```
 
-### Setup (60 seconds)
-
-**1. Generate keys** (on your laptop):
+**2. Generate keys** (on your laptop):
 ```bash
 clawgate keygen
 # Creates ~/.clawgate/keys/private.key and public.key
 ```
 
-**2. Grant access** (on your laptop):
+**3. Copy public key to agent machine**:
 ```bash
-clawgate grant --read ~/projects --ttl 24h > token.txt
-# Copy token.txt and public.key to your agent machine
+# On agent machine - create the directory:
+mkdir -p ~/.clawgate/keys
+
+# From your laptop - copy the public key:
+scp ~/.clawgate/keys/public.key agent-machine:~/.clawgate/keys/
+```
+The agent needs your public key to verify token signatures.
+
+**4. Grant access** (on your laptop):
+```bash
+clawgate grant --read ~/projects --ttl 24h
+# Outputs a token - copy it to the agent machine
 ```
 
-**3. Start agent daemon** (on isolated machine):
+**5. Add token** (on agent machine):
 ```bash
-clawgate token add "$(cat token.txt)"
+clawgate token add "<paste-token-here>"
+```
+
+**6. Start daemons**:
+```bash
+# On agent machine (start first):
 clawgate --mode agent
-# Listens on 0.0.0.0:4223
-```
 
-**4. Start resource daemon** (on your laptop):
-```bash
+# On your laptop:
 clawgate --mode resource --connect <agent-ip>:4223
-# Connects to agent with E2E encryption
 ```
 
 **Done.** Your agent can now securely read files in `~/projects`.
-
-[screenshot: terminal showing grant command and token output]
 
 ---
 
