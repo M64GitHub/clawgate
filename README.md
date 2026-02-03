@@ -12,6 +12,9 @@
 
 Think of it as **SSH keys meet JWT tokens meet capability-based security** - designed specifically for the AI agent era.
 
+<img width="1025" height="1364" alt="image" src="https://github.com/user-attachments/assets/b3361aef-da3e-43a2-8f8d-d0b618367e63" />
+
+
 ## The Problem
 
 You're running [OpenClaw](https://github.com/openclaw/openclaw) (or Claude Code, or any AI agent) on an isolated machine - maybe a Mac Mini, a VPS, or a sandboxed container. **Smart move for security.**
@@ -117,8 +120,8 @@ clawgate cat ~/projects/app/src/main.zig
 clawgate ls ~/projects/app/src/
 clawgate write ~/projects/app/notes.md --content "TODO: refactor"
 ```
+<img width="1044" height="954" alt="image" src="https://github.com/user-attachments/assets/311d7518-8232-40c7-aa27-98126217e87f" />
 
-[screenshot: OpenClaw using ClawGate to read a file]
 
 ### Works With Any Agent
 
