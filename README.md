@@ -16,7 +16,7 @@ Think of it as **SSH keys meet JWT tokens meet capability-based security** - des
 <img width="1025" height="1338" alt="image" src="https://github.com/user-attachments/assets/953da1d4-7e3c-4946-b5ee-1e21c9c18a49" />
 
 Resource daemon logs audit events (on private laptop)
-<img width="1897" height="215" alt="image" src="https://github.com/user-attachments/assets/ca2d815c-de59-4cf0-bb3c-814acd63b75a" />
+<img width="1906" height="274" alt="image" src="https://github.com/user-attachments/assets/9e63403f-ba10-44f5-aa55-21339f2a8f9f" />
 
 Token list (on isolated agent)
 <img width="1871" height="328" alt="image" src="https://github.com/user-attachments/assets/b0ce0add-34b8-496e-8822-a950f1e2adcc" />
