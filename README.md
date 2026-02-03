@@ -126,8 +126,6 @@ ClawGate isn't locked to OpenClaw. It works with **any AI agent** that can:
 - Call CLI commands (Claude Code, Cursor, etc.)
 - Use **MCP**  servers (Claude Code, Codex, etc.)
 
----
-
 ## How It Works
 
 ### Capability Tokens
@@ -179,8 +177,6 @@ Denied operations fail immediately on the agent daemon:
 Error: No token grants list access to /etc/hosts
 ```
 
----
-
 ## Features
 
 | Feature | Description |
@@ -195,8 +191,6 @@ Error: No token grants list access to /etc/hosts
 | 🦞 **OpenClaw native** | Skill file included |
 | **Fast** | Pure Zig, zero dependencies, minimal latency |
 | **Zero trust design** | Assumes agent machine is compromised |
-
----
 
 ## Security
 
@@ -316,8 +310,6 @@ truncate_at = 524288       # 512KB
 token_dir = "~/.clawgate/tokens"
 ```
 
----
-
 ## Architecture
 
 ClawGate is split into two cooperating sides: the **resource side** (your laptop) and the **agent side** (the isolated machine).
@@ -372,8 +364,6 @@ ClawGate is split into two cooperating sides: the **resource side** (your laptop
 | [**Design Document**](docs/DESIGN.md) | Technical reference: architecture, security model, protocol specification |
 | [**Glob Patterns**](docs/GLOBBING.md) | Complete reference for scope pattern matching with all edge cases |
 
----
-
 ## Roadmap
 
 - [x] Core protocol and daemons
@@ -384,7 +374,6 @@ ClawGate is split into two cooperating sides: the **resource side** (your laptop
 - [ ] Web dashboard for audit viewing
 - [ ] Token revocation list
 - [ ] Multi-resource federation
-- [ ] **ClawGate Key** - ESP32 hardware module for air-gapped token signing
 
 ## Contributing
 
@@ -397,8 +386,6 @@ Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 ## License
 
 MIT - see [LICENSE](LICENSE)
-
----
 
 <p align="center">
   <b>ClawGate</b> - Secure file access for the AI agent era<br>
