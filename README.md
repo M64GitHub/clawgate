@@ -12,8 +12,6 @@
 
 Think of it as **SSH keys meet JWT tokens meet capability-based security** - designed specifically for the AI agent era.
 
----
-
 ## The Problem
 
 You're running [OpenClaw](https://github.com/openclaw/openclaw) (or Claude Code, or any AI agent) on an isolated machine - maybe a Mac Mini, a VPS, or a sandboxed container. **Smart move for security.**
@@ -56,8 +54,6 @@ ClawGate provides **secure, scoped, audited file access** over direct TCP with e
 - **Least privilege** - Grant only specific paths, not filesystems
 - **Time-bounded** - Tokens expire (1 hour, 24 hours, 7 days)
 - **Complete audit** - Every operation logged with cryptographic proof
-
----
 
 ## Quick Start
 
@@ -110,24 +106,10 @@ clawgate --mode resource --connect <agent-ip>:4223
 
 **Done.** Your agent can now securely read files in `~/projects`.
 
----
-
 ## OpenClaw Integration
 
-ClawGate was built for [OpenClaw](https://github.com/openclaw/openclaw). Add it as an MCP server:
-
-```json
-{
-  "mcpServers": {
-    "clawgate": {
-      "command": "clawgate",
-      "args": ["mcp-server"]
-    }
-  }
-}
-```
-
-Or use the skill file (copy `skills/clawgate/SKILL.md` to your workspace):
+ClawGate was built for [OpenClaw](https://github.com/openclaw/openclaw). 
+Add the skill file: copy `skills/clawgate/SKILL.md` to your workspace
 
 ```bash
 # Your agent can now use these commands:
@@ -405,6 +387,7 @@ token_dir = "~/.clawgate/tokens"
 
 | Document | Description |
 |----------|-------------|
+| [**OpenClaw Quick Setup**](docs/OPENCLAW-QUICK-SETUP.md) | 5-minute setup guide for OpenClaw integration |
 | [**Glob Patterns**](docs/GLOBBING.md) | Complete reference for scope pattern matching with all edge cases |
 
 ---
