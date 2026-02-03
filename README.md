@@ -122,12 +122,9 @@ ClawGate isn't locked to OpenClaw. It works with **any AI agent** that can:
 
 | Agent | Integration |
 |-------|-------------|
-| **OpenClaw** | MCP server or skill file |
-| **Claude Code** | Skill file with CLI commands |
+| **OpenClaw** | Skill file (uses CLI) |
+| **Claude Code** | Skill file (uses CLI) |
 | **Cursor** | Custom tool calling clawgate CLI |
-| **Aider** | Shell commands in chat |
-
-The MCP server and CLI are convenience layers over the core E2E encrypted TCP protocol.
 
 ---
 
@@ -183,13 +180,19 @@ Agent                   E2E Tunnel            Resource Daemon
 
 ### Audit Trail
 
-Every operation is logged locally on the resource daemon:
+Every successful operation is logged locally on the resource daemon:
 
 ```bash
 clawgate audit
-# [2026-02-01T10:23:45Z] READ /home/mario/projects/app/main.zig OK (1.2KB, 3ms)
-# [2026-02-01T10:23:47Z] LIST /home/mario/projects/app/ OK (12 entries, 1ms)
-# [2026-02-01T10:24:01Z] READ /home/mario/.ssh/id_rsa DENIED (forbidden path)
+# [2026-02-01T10:23:45Z] READ /home/mario/projects/app/main.zig success=true
+# [2026-02-01T10:23:47Z] LIST /home/mario/projects/app/ success=true
+```
+
+Denied operations fail immediately on the agent daemon:
+
+```
+> clawgate ls /etc/hosts
+Error: No token grants list access to /etc/hosts
 ```
 
 ---
@@ -205,7 +208,7 @@ clawgate audit
 | **Complete audit trail** | Every operation logged with token ID |
 | **Forbidden paths** | `~/.ssh`, `~/.aws`, `~/.gnupg` can NEVER be granted |
 | **Large file handling** | Files >512KB automatically truncated with metadata |
-| 🦞 **OpenClaw native** | MCP server + skill file included |
+| 🦞 **OpenClaw native** | Skill file included |
 | **Fast** | Pure Zig, zero dependencies, minimal latency |
 | **Zero trust design** | Assumes agent machine is compromised |
 
@@ -245,7 +248,6 @@ Found a security issue? Email security@clawgate.io (or open a private advisory o
 
 See [SECURITY.md](SECURITY.md) for our full security policy.
 
----
 
 ## CLI Reference
 
@@ -296,7 +298,6 @@ EXAMPLES:
   clawgate audit --json | jq .
 ```
 
----
 
 ## Configuration
 
