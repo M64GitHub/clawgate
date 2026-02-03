@@ -12,7 +12,8 @@
 
 Think of it as **SSH keys meet JWT tokens meet capability-based security** - designed specifically for the AI agent era.
 
-<img width="1025" height="1364" alt="image" src="https://github.com/user-attachments/assets/b3361aef-da3e-43a2-8f8d-d0b618367e63" />
+<img width="1043" height="1269" alt="image" src="https://github.com/user-attachments/assets/3c6b06c8-1be7-4ea3-9cea-d09222f28419" />
+
 
 
 ## The Problem
