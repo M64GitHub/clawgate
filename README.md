@@ -37,6 +37,13 @@ ClawGate provides **secure, scoped, audited file access** over direct TCP with e
 - **Time-bounded** - Tokens expire (1 hour, 24 hours, 7 days)
 - **Complete audit** - Every operation logged with cryptographic proof
 
+## Requirements
+
+- **Platforms:** Linux or macOS (uses Unix sockets for local IPC)
+- **Build:** Zig 0.16+ (if building from source)
+
+> **Note:** Windows is not currently supported. WSL2 works but is untested.
+
 ## Quick Start
 
 **1. Install** (on both machines):
