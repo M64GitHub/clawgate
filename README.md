@@ -12,9 +12,8 @@
 
 Think of it as **SSH keys meet JWT tokens meet capability-based security** - designed specifically for the AI agent era.
 
-<img width="1043" height="1269" alt="image" src="https://github.com/user-attachments/assets/3c6b06c8-1be7-4ea3-9cea-d09222f28419" />
 
-
+<img width="1025" height="1338" alt="image" src="https://github.com/user-attachments/assets/953da1d4-7e3c-4946-b5ee-1e21c9c18a49" />
 
 ## The Problem
 
@@ -35,23 +34,7 @@ But now your agent needs to read your project files. Your options?
 
 ClawGate provides **secure, scoped, audited file access** over direct TCP with end-to-end encryption:
 
-```
-┌─────────────────────┐                    ┌─────────────────────────┐
-│   YOUR LAPTOP       │                    │   ISOLATED MACHINE      │
-│                     │                    │                         │
-│   ~/projects/       │                    │   OpenClaw / Claude     │
-│   ~/documents/      │◄──── TCP:4223 ────►│   ClawGate Agent        │
-│                     │   (E2E encrypted)  │                         │
-│   ClawGate Resource │                    │   "Read ~/projects/     │
-│   Daemon            │                    │    app/src/main.zig"    │
-└─────────────────────┘                    └─────────────────────────┘
-         │                                            │
-         │  ✓ Validates token signature               │
-         │  ✓ Checks path is in scope                 │
-         │  ✓ Logs to audit trail                     │
-         │  ✓ Returns file content                    │
-         └────────────────────────────────────────────┘
-```
+<img width="1043" height="1269" alt="image" src="https://github.com/user-attachments/assets/3c6b06c8-1be7-4ea3-9cea-d09222f28419" />
 
 **Key principles:**
 - **Zero trust** - Assumes the agent machine is compromised
@@ -121,8 +104,6 @@ clawgate cat ~/projects/app/src/main.zig
 clawgate ls ~/projects/app/src/
 clawgate write ~/projects/app/notes.md --content "TODO: refactor"
 ```
-<img width="1044" height="954" alt="image" src="https://github.com/user-attachments/assets/311d7518-8232-40c7-aa27-98126217e87f" />
-
 
 ### Works With Any Agent
 
