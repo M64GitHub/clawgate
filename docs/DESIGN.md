@@ -23,8 +23,6 @@ This document is intended for developers, security auditors, and operators.
 It covers the internal architecture, security model, protocol specification,
 and deployment scenarios. For quick-start usage, see the README.
 
----
-
 ## Architecture Overview
 
 ### System Components
@@ -177,8 +175,6 @@ The connection model is designed for security:
 
 4. **Persistent connection** - The connection remains open for the session
    duration, with automatic reconnection on disconnect.
-
----
 
 ## Security Model
 
@@ -342,8 +338,6 @@ secrets.yml         Application secrets
 
 These patterns cannot be overridden by configuration or tokens.
 
----
-
 ## Capability Token Format
 
 ### JWT Structure
@@ -493,8 +487,6 @@ Receive Request with Token
          v
     Execute Operation
 ```
-
----
 
 ## Protocol Specification
 
@@ -735,8 +727,6 @@ capabilities via JSON-RPC 2.0 over stdio.
 {"jsonrpc": "2.0", "id": 3, "result": {"content": "..."}}
 ```
 
----
-
 ## Configuration
 
 ### Config File Location
@@ -790,8 +780,6 @@ forbidden_path = "/etc/shadow"
 | resource.truncate_at | 512 KB |
 
 Path values support `~` expansion to home directory.
-
----
 
 ## Deployment Scenarios
 
@@ -975,8 +963,6 @@ services:
 - Copy resource's public key into container at build time (agent needs it to verify token signatures)
 - Network mode may need adjustment for your setup
 
----
-
 ## CLI Reference
 
 ### Daemon Commands
@@ -1082,8 +1068,6 @@ Audit events are logged to stderr with prefix `AUDIT:`:
 AUDIT: req=req_12345 op=read path=/home/mario/file.txt success=true
 ```
 
----
-
 ## Operational Limits
 
 ### File Operations
@@ -1109,8 +1093,6 @@ AUDIT: req=req_12345 op=read path=/home/mario/file.txt success=true
 | Session ID length | 37 chars (`sess_` + 32 hex) |
 | Token ID length | 27 chars (`cg_` + 24 hex) |
 | Nonce counter max | 2^64 messages per session |
-
----
 
 ## Security Considerations
 
@@ -1144,8 +1126,6 @@ at their `exp` timestamp. For immediate revocation:
 
 Consider using shorter TTLs if revocation needs are anticipated.
 
----
-
 ## Appendix A: Error Code Reference
 
 | Code | HTTP Equiv. | Description |
@@ -1164,29 +1144,3 @@ Consider using shorter TTLs if revocation needs are anticipated.
 | IS_SYMLINK | 403 | Symlinks not permitted |
 | INTERNAL_ERROR | 500 | Unexpected server error |
 
-## Appendix B: Glossary
-
-**Agent Daemon** - Process running on the isolated machine that listens for
-connections and proxies requests.
-
-**Capability Token** - JWT containing scoped permissions for file access.
-
-**E2E Encryption** - End-to-end encryption ensuring only endpoints can read
-messages.
-
-**Forward Secrecy** - Property ensuring past sessions cannot be decrypted
-even if long-term keys are compromised.
-
-**HKDF** - HMAC-based Key Derivation Function used to derive session keys.
-
-**MCP** - Model Context Protocol, a JSON-RPC protocol for AI tool integration.
-
-**Resource Daemon** - Process running on the primary machine that validates
-tokens and executes file operations.
-
-**Scope Pattern** - Glob pattern defining which paths a token can access.
-
-**X25519** - Elliptic curve Diffie-Hellman for key exchange.
-
-**XChaCha20-Poly1305** - Authenticated encryption algorithm providing
-confidentiality and integrity.
