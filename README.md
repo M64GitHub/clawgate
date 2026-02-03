@@ -12,17 +12,6 @@
 
 Think of it as **SSH keys meet JWT tokens meet capability-based security** - designed specifically for the AI agent era.
 
-
-<img width="1025" height="1338" alt="image" src="https://github.com/user-attachments/assets/953da1d4-7e3c-4946-b5ee-1e21c9c18a49" />
-
-Resource daemon logs audit events (on private laptop)
-<img width="1906" height="274" alt="image" src="https://github.com/user-attachments/assets/9e63403f-ba10-44f5-aa55-21339f2a8f9f" />
-
-Token list (on isolated agent)
-<img width="1871" height="328" alt="image" src="https://github.com/user-attachments/assets/b0ce0add-34b8-496e-8822-a950f1e2adcc" />
-
-
-
 ## The Problem
 
 You're running [OpenClaw](https://github.com/openclaw/openclaw) (or Claude Code, or any AI agent) on an isolated machine - maybe a Mac Mini, a VPS, or a sandboxed container. **Smart move for security.**
@@ -47,8 +36,6 @@ ClawGate provides **secure, scoped, audited file access** over direct TCP with e
 - **Least privilege** - Grant only specific paths, not filesystems
 - **Time-bounded** - Tokens expire (1 hour, 24 hours, 7 days)
 - **Complete audit** - Every operation logged with cryptographic proof
-
-<img width="1043" height="1269" alt="image" src="https://github.com/user-attachments/assets/3c6b06c8-1be7-4ea3-9cea-d09222f28419" />
 
 ## Quick Start
 
@@ -103,8 +90,10 @@ clawgate --mode resource --connect <agent-ip>:4223
 
 ## OpenClaw Integration
 
-ClawGate was built for [OpenClaw](https://github.com/openclaw/openclaw). 
-Add the skill file: copy `skills/clawgate/SKILL.md` to your workspace
+ClawGate was built for [OpenClaw](https://github.com/openclaw/openclaw).  
+
+Add the skill file: copy `skills/clawgate/SKILL.md` to your workspace.  
+**Done**.  
 
 ```bash
 # Your agent can now use these commands:
@@ -112,6 +101,16 @@ clawgate cat ~/projects/app/src/main.zig
 clawgate ls ~/projects/app/src/
 clawgate write ~/projects/app/notes.md --content "TODO: refactor"
 ```
+
+### Example Interaction
+
+<img width="1025" height="1338" alt="image" src="https://github.com/user-attachments/assets/953da1d4-7e3c-4946-b5ee-1e21c9c18a49" />
+
+Resource daemon logs audit events (on private laptop)
+<img width="1906" height="274" alt="image" src="https://github.com/user-attachments/assets/9e63403f-ba10-44f5-aa55-21339f2a8f9f" />
+
+Token list (on isolated agent)
+<img width="1871" height="328" alt="image" src="https://github.com/user-attachments/assets/b0ce0add-34b8-496e-8822-a950f1e2adcc" />
 
 ### Works With Any Agent
 
