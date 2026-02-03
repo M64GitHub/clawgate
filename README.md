@@ -53,7 +53,7 @@ sudo cp zig-out/bin/clawgate /usr/local/bin/
 **2. Generate keys** (on your laptop):
 ```bash
 clawgate keygen
-# Creates ~/.clawgate/keys/private.key and public.key
+# Creates ~/.clawgate/keys/secret.key and public.key
 ```
 
 **3. Copy public key to agent machine**:
@@ -114,17 +114,10 @@ Token list (on isolated agent)
 
 ### Works With Any Agent
 
-ClawGate isn't locked to OpenClaw. It works with **any AI agent** that can:
-- Call CLI commands (Claude Code, Cursor, Aider, etc.)
-- Use MCP servers
+ClawGate isn't locked to OpenClaw. It works with **any AI agent** that can:  
 
-**Examples:**
-
-| Agent | Integration |
-|-------|-------------|
-| **OpenClaw** | Skill file (uses CLI) |
-| **Claude Code** | Skill file (uses CLI) |
-| **Cursor** | Custom tool calling clawgate CLI |
+- Call CLI commands (Claude Code, Cursor, etc.)
+- Use **MCP**  servers (Claude Code, Codex, etc.)
 
 ---
 
@@ -160,22 +153,6 @@ clawgate grant --read /home/mario/file.txt      # Exact file
 clawgate grant --read /home/mario/projects/*    # Direct children only
 clawgate grant --read /home/mario/projects/**   # Recursive (all descendants)
 clawgate grant --read /home/mario/projects/*.zig # Glob pattern
-```
-
-### Request Flow
-
-```
-Agent                   E2E Tunnel            Resource Daemon
-  │                        │                         │
-  │ ── read request ────►  │  ────────────────────►  │
-  │    + token             │   (XChaCha20-Poly1305)  │
-  │                        │                         ├─ Verify signature
-  │                        │                         ├─ Check not expired
-  │                        │                         ├─ Check path in scope
-  │                        │                         ├─ Read file
-  │                        │                         ├─ Log to audit
-  │  ◄─────────────────────│  ◄── file content ────  │
-  │                        │                         │
 ```
 
 ### Audit Trail
@@ -314,7 +291,7 @@ connect_addr = "agent.example.com"
 connect_port = 4223
 
 [keys]
-private_key = "~/.clawgate/keys/private.key"
+private_key = "~/.clawgate/keys/secret.key"
 public_key = "~/.clawgate/keys/public.key"
 
 [resource]
@@ -336,51 +313,56 @@ token_dir = "~/.clawgate/tokens"
 
 ## Architecture
 
-```
-┌────────────────────────────────────────────────────────────────────┐
-│                         YOUR LAPTOP                                │
-│                                                                    │
-│  ┌─────────────┐    ┌──────────────────┐                           │
-│  │   Files     │◄───│ Resource Daemon  │                           │
-│  │ ~/projects/ │    │                  │                           │
-│  └─────────────┘    │ • Token verify   │                           │
-│                     │ • Scope check    │                           │
-│                     │ • File ops       │                           │
-│                     │ • Audit logging  │                           │
-│                     └────────┬─────────┘                           │
-│                              │                                     │
-└──────────────────────────────┼─────────────────────────────────────┘
-                               │
-                    TCP :4223  │  E2E Encrypted
-                   (outbound)  │  X25519 + XChaCha20
-                               │
-┌──────────────────────────────┼─────────────────────────────────────┐
-│     ISOLATED MACHINE         │        (i.e. mac mini)              │
-│                              │                                     │
-│  ┌─────────────────┐    ┌────┴─────────────┐                       │
-│  │    OpenClaw     │───►│  Agent Daemon    │◄── listens :4223      │
-│  │    or any AI    │    │                  │                       │
-│  │    agent        │    │ • Token store    │                       │
-│  └────────┬────────┘    │ • Request proxy  │                       │
-│           │             │ • IPC server     │                       │
-│           │             └──────────────────┘                       │
-│           │                      ▲                                 │
-│           ▼                      │ Unix socket                     │
-│  ┌─────────────────┐             │                                 │
-│  │   MCP Server    │─────────────┘                                 │
-│  │   (stdio)       │                                               │
-│  └─────────────────┘                                               │
-│                                                                    │
-└────────────────────────────────────────────────────────────────────┘
-```
+ClawGate is split into two cooperating sides: the **resource side** (your laptop) and the **agent side** (the isolated machine).
 
----
+### Resource Side (your laptop)
+
+**Resource Daemon**
+- Runs on your primary machine where your files live
+- Responsibilities:
+  - Verifies capability token signatures
+  - Enforces scope and permissions
+  - Executes file operations (read, list, stat, write)
+  - Writes audit events
+
+**Protected Resources**
+- Your local files (e.g. `~/projects`)
+- Never mounted or shared directly
+- Only accessed via validated requests handled by the Resource Daemon
+
+### Agent Side (isolated machine, e.g. Mac Mini or VPS)
+
+**Agent Daemon**
+- Runs next to the AI agent
+- Responsibilities:
+  - Stores issued capability tokens
+  - Proxies file access requests to the Resource Daemon
+  - Exposes a local IPC interface (Unix socket)
+
+**AI Agent**
+- Any AI system (OpenClaw, Claude Code, Cursor, etc.)
+- Talks only to the local Agent Daemon
+- Never has direct filesystem access
+
+**MCP Server (optional)**
+- Runs over stdio
+- Connects to the Agent Daemon via Unix socket
+- Provides tool-style access for compatible agents
+
+### Communication
+
+- The Resource Daemon connects to the Agent Daemon over TCP (`:4223`)
+- All file access requests pass through this channel
+- The Resource Daemon is the only component that touches the filesystem
+
+(Security properties of this channel are defined in the **Security** section.)
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
 | [**OpenClaw Quick Setup**](docs/OPENCLAW-QUICK-SETUP.md) | 5-minute setup guide for OpenClaw integration |
+| [**Design Document**](docs/DESIGN.md) | Technical reference: architecture, security model, protocol specification |
 | [**Glob Patterns**](docs/GLOBBING.md) | Complete reference for scope pattern matching with all edge cases |
 
 ---
@@ -390,27 +372,12 @@ token_dir = "~/.clawgate/tokens"
 - [x] Core protocol and daemons
 - [x] Capability token system
 - [x] CLI commands
-- [x] MCP server for OpenClaw
+- [x] MCP server for Claude Code, etc.
 - [ ] Setup wizard (`clawgate setup`)
 - [ ] Web dashboard for audit viewing
 - [ ] Token revocation list
 - [ ] Multi-resource federation
 - [ ] **ClawGate Key** - ESP32 hardware module for air-gapped token signing
-
----
-
-## Built With
-
-| Technology | Purpose |
-|------------|---------|
-| [**Zig**](https://ziglang.org) | Memory-safe systems programming |
-| [**Ed25519**](https://ed25519.cr.yp.to/) | Digital signatures for capability tokens |
-| [**X25519**](https://cr.yp.to/ecdh.html) | Elliptic curve Diffie-Hellman key exchange |
-| [**XChaCha20-Poly1305**](https://datatracker.ietf.org/doc/html/rfc8439) | Authenticated encryption |
-
-**Zero external dependencies** - Everything is built on Zig's standard library.
-
----
 
 ## Contributing
 

@@ -33,7 +33,7 @@ sudo cp zig-out/bin/clawgate /usr/local/bin/
 
 ```bash
 clawgate keygen
-# Creates ~/.clawgate/keys/private.key and public.key
+# Creates ~/.clawgate/keys/secret.key and public.key
 ```
 
 ### 3. Copy Public Key to Agent Machine
