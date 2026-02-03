@@ -1,5 +1,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.16+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
+[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://github.com/M64GitHub/clawgate/releases)
 
 ![gemini-2 5-flash-image_make_this_logo_more_suitable_as_a_brand_logo_for_an_ai_software_security_product-0(1)](https://github.com/user-attachments/assets/6ccb9158-7dd1-49dd-95a7-48f1156a1d92)
 
