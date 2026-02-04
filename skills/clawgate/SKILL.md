@@ -138,6 +138,7 @@ If an operation is denied, you'll receive an error with a code:
 | `TOKEN_EXPIRED` | Token has expired, user needs to grant again |
 | `FORBIDDEN_PATH` | Path is in the forbidden list |
 | `NOT_FOUND` | File or directory doesn't exist |
+| `IS_SYMLINK` | Path is a symbolic link (symlinks are rejected) |
 | `CONNECTION_CLOSED` | Resource daemon not running |
 
 When access is denied, inform the user they may need to grant additional access.
