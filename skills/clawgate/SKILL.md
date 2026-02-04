@@ -159,7 +159,7 @@ clawgate grant --write "/tmp/output/**" --ttl 24h
 clawgate grant --read --write "/path/to/project/**" --ttl 24h
 ```
 
-**Hot reload:** Tokens can be added while running — no restart needed!
+**Hot reload:** Tokens can be added while running - no restart needed!
 
 ```bash
 clawgate token add "<token>"
@@ -190,4 +190,4 @@ Agent Machine                    Primary Machine
 
 ---
 
-*ClawGate — Secure file access for the AI agent era* 🦞
+*ClawGate - Secure file access for the AI agent era* 🦞

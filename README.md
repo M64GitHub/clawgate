@@ -191,6 +191,7 @@ Error: No token grants list access to /etc/hosts
 | **Forbidden paths** | `~/.ssh`, `~/.aws`, `~/.gnupg` can NEVER be granted |
 | **Large file handling** | Files >512KB automatically truncated with metadata |
 | 🦞 **OpenClaw native** | Skill file included |
+| **Symlink protection** | Symlinks rejected to prevent scope escape attacks |
 | **Fast** | Pure Zig, zero dependencies, minimal latency |
 | **Zero trust design** | Assumes agent machine is compromised |
 
@@ -211,6 +212,7 @@ ClawGate is a **security tool**. We take this seriously.
 | **Authentication** | Ed25519 signed tokens |
 | **Authorization** | Per-request scope validation |
 | **Path safety** | Canonicalization, traversal protection |
+| **Symlink rejection** | All symlinks unconditionally rejected |
 | **Forbidden paths** | ~/.ssh, ~/.aws, ~/.gnupg - hardcoded, ungrantable |
 | **Time limits** | Tokens expire, limiting blast radius |
 | **Audit** | Every operation logged locally |
@@ -234,49 +236,49 @@ See [SECURITY.md](SECURITY.md) for our full security policy.
 ```
 ClawGate - Secure file access for isolated AI agents
 
-USAGE:
-  clawgate <command> [options]
+Usage:
+  clawgate --mode agent             Run agent daemon (listens for connections)
+  clawgate --mode resource          Run resource daemon (connects to agent)
+  clawgate mcp-server               Run MCP server (stdio)
 
-DAEMON COMMANDS:
-  --mode resource       Run resource daemon (on your laptop)
-  --mode agent          Run agent daemon (on isolated machine)
-  mcp-server            Run MCP server (stdio, for OpenClaw)
+Capability Management (primary machine):
+  clawgate grant [opts] <path>      Grant access to path
+    --read                          Allow read operations
+    --write                         Allow write operations
+    --ttl <duration>                Token lifetime (2h, 24h, 7d)
+  clawgate keygen                   Generate Ed25519 keypair
 
-SETUP COMMANDS:
-  keygen                Generate Ed25519 keypair
-  grant [options] PATH  Create capability token
-    --read              Allow read, list, stat
-    --write             Allow write (implies read)
-    --ttl DURATION      Token lifetime (1h, 24h, 7d, etc.)
+Token Management (agent machine):
+  clawgate token add <token>        Add a capability token
+  clawgate token list               List stored tokens
+  clawgate token remove <id>        Remove a token
 
-FILE COMMANDS (agent side):
-  cat PATH              Read file contents
-  ls PATH               List directory
-  write PATH            Write file (--content or stdin)
-  stat PATH             Get file metadata
+File Operations (agent machine):
+  clawgate cat <path>               Read file
+  clawgate ls <path>                List directory
+  clawgate write <path>             Write file (stdin or --content)
+  clawgate stat <path>              Get file info
 
-ADMIN COMMANDS:
-  audit                 Watch audit event stream
-  token add TOKEN       Add token to agent store
-  token list            List stored tokens
-  token remove ID       Remove token
+Monitoring:
+  clawgate audit                    Watch audit log
+  clawgate audit --json             Output as JSON
 
-OPTIONS:
-  --config PATH         Config file (default: ~/.clawgate/config.toml)
-  --verbose             Verbose logging
-  --version             Show version
-  --help                Show this help
+Daemon Options:
+  --listen <addr:port>              Listen address (agent mode, default 0.0.0.0:4223)
+  --connect <host:port>             Connect address (resource mode)
+  --public-key <path>               Public key path (resource mode)
+  --token-dir <path>                Token directory (agent mode)
 
-EXAMPLES:
-  # Grant read access to projects for 24 hours
-  clawgate grant --read --ttl 24h ~/projects
+General Options:
+  --help, -h                        Show this help
+  --version, -v                     Show version
 
-  # Read a file through ClawGate
-  clawgate cat ~/projects/app/main.zig
-
-  # Watch all file access in real-time
-  clawgate audit --json | jq .
+https://clawgate.io
 ```
+
+> **Tip:** Running a subcommand without required arguments shows detailed help.
+> For example, `clawgate grant` shows all grant options including `--list`,
+> `--stat`, `-k/--key`, `--issuer`, and `--subject`.
 
 
 ## Configuration
