@@ -199,7 +199,7 @@ fn handleInitialize(allocator: Allocator, id: ?std.json.Value) ![]const u8 {
     try writer.writeAll("\"capabilities\":{\"tools\":{}},");
     try writer.writeAll("\"serverInfo\":{");
     try writer.writeAll("\"name\":\"clawgate\",");
-    try writer.writeAll("\"version\":\"0.1.0\"");
+    try writer.writeAll("\"version\":\"0.2.0\"");
     try writer.writeAll("}}}");
 
     const result = output.written();
@@ -263,6 +263,27 @@ fn handleToolsList(allocator: Allocator, id: ?std.json.Value) ![]const u8 {
     try writer.writeAll("\"description\":");
     try writer.writeAll("\"Absolute path to file or directory\"");
     try writer.writeAll("}},\"required\":[\"path\"]}}");
+
+    try writer.writeAll(",");
+
+    // clawgate_git
+    try writer.writeAll("{\"name\":\"clawgate_git\",");
+    try writer.writeAll("\"description\":");
+    try writer.writeAll(
+        "\"Run git commands on the primary machine\",",
+    );
+    try writer.writeAll("\"inputSchema\":{\"type\":\"object\",");
+    try writer.writeAll("\"properties\":{");
+    try writer.writeAll("\"path\":{\"type\":\"string\",");
+    try writer.writeAll(
+        "\"description\":\"Repository path\"},",
+    );
+    try writer.writeAll("\"args\":{\"type\":\"array\",");
+    try writer.writeAll("\"items\":{\"type\":\"string\"},");
+    try writer.writeAll("\"description\":");
+    try writer.writeAll("\"Git arguments (e.g. ");
+    try writer.writeAll("[\\\"status\\\", \\\"--short\\\"])\"");
+    try writer.writeAll("}},\"required\":[\"path\",\"args\"]}}");
 
     try writer.writeAll("]}}");
 
@@ -378,6 +399,33 @@ fn handleToolsCall(
         return executeListDirectory(allocator, environ, id, path, store);
     } else if (std.mem.eql(u8, name, "clawgate_stat")) {
         return executeStat(allocator, environ, id, path, store);
+    } else if (std.mem.eql(u8, name, "clawgate_git")) {
+        // Extract args array
+        const git_args_val = args.get("args") orelse {
+            return formatError(
+                allocator,
+                id,
+                McpError.INVALID_PARAMS,
+                "Missing args",
+            );
+        };
+        const git_args_arr = switch (git_args_val) {
+            .array => |a| a,
+            else => return formatError(
+                allocator,
+                id,
+                McpError.INVALID_PARAMS,
+                "args must be array",
+            ),
+        };
+        return executeGitTool(
+            allocator,
+            environ,
+            id,
+            path,
+            git_args_arr,
+            store,
+        );
     } else {
         return formatError(
             allocator,
@@ -697,6 +745,214 @@ fn executeStat(
     }) catch "stat result";
 
     return formatToolResult(allocator, id, text);
+}
+
+/// Executes clawgate_git tool.
+fn executeGitTool(
+    allocator: Allocator,
+    environ: std.process.Environ,
+    id: ?std.json.Value,
+    path: []const u8,
+    git_args_arr: std.json.Array,
+    store: *tokens.TokenStore,
+) ![]const u8 {
+    const tok = store.findForPath(
+        "files",
+        "git",
+        path,
+    ) orelse {
+        return formatError(
+            allocator,
+            id,
+            McpError.NO_TOKEN,
+            "No capability token for path",
+        );
+    };
+
+    // Extract string args from JSON array
+    var args_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer args_list.deinit(allocator);
+
+    for (git_args_arr.items) |item| {
+        const s = switch (item) {
+            .string => |s| s,
+            else => return formatError(
+                allocator,
+                id,
+                McpError.INVALID_PARAMS,
+                "args must be strings",
+            ),
+        };
+        args_list.append(allocator, s) catch {
+            return formatError(
+                allocator,
+                id,
+                McpError.INTERNAL_ERROR,
+                "Out of memory",
+            );
+        };
+    }
+
+    if (args_list.items.len == 0) {
+        return formatError(
+            allocator,
+            id,
+            McpError.INVALID_PARAMS,
+            "args must not be empty",
+        );
+    }
+
+    const response = sendGitRequest(
+        allocator,
+        environ,
+        path,
+        tok.raw,
+        args_list.items,
+    ) catch |err| {
+        return mapConnectionError(allocator, id, err);
+    };
+    defer allocator.free(response);
+
+    // Parse the response to check ok/error
+    const parsed = std.json.parseFromSlice(
+        struct {
+            ok: bool,
+            result: ?struct {
+                stdout: []const u8 = "",
+                stderr: []const u8 = "",
+                exit_code: u8 = 0,
+                truncated: bool = false,
+            } = null,
+            @"error": ?struct {
+                code: []const u8,
+                message: []const u8,
+            } = null,
+        },
+        allocator,
+        response,
+        .{ .ignore_unknown_fields = true },
+    ) catch {
+        return formatError(
+            allocator,
+            id,
+            McpError.INTERNAL_ERROR,
+            "Invalid response from daemon",
+        );
+    };
+    defer parsed.deinit();
+
+    if (!parsed.value.ok) {
+        if (parsed.value.@"error") |e| {
+            return formatError(
+                allocator,
+                id,
+                mapProtocolError(e.code),
+                e.message,
+            );
+        }
+        return formatError(
+            allocator,
+            id,
+            McpError.INTERNAL_ERROR,
+            "Unknown error",
+        );
+    }
+
+    if (parsed.value.result) |result| {
+        // Build output text: stdout + stderr if non-empty
+        var output: std.Io.Writer.Allocating = .init(allocator);
+        errdefer output.deinit();
+        const writer = &output.writer;
+
+        if (result.stdout.len > 0) {
+            try writer.writeAll(result.stdout);
+        }
+        if (result.stderr.len > 0) {
+            if (result.stdout.len > 0) {
+                try writer.writeAll("\n--- stderr ---\n");
+            }
+            try writer.writeAll(result.stderr);
+        }
+        if (result.exit_code != 0) {
+            try writer.print(
+                "\n[exit code: {d}]",
+                .{result.exit_code},
+            );
+        }
+        if (result.truncated) {
+            try writer.writeAll("\n[output truncated]");
+        }
+
+        const text = output.written();
+        const text_copy = try allocator.dupe(u8, text);
+        defer allocator.free(text_copy);
+        output.deinit();
+
+        return formatToolResult(allocator, id, text_copy);
+    }
+
+    return formatToolResult(allocator, id, "");
+}
+
+/// Sends a git request via IPC to the agent daemon.
+fn sendGitRequest(
+    allocator: Allocator,
+    environ: std.process.Environ,
+    path: []const u8,
+    token_raw: []const u8,
+    git_args: []const []const u8,
+) ![]const u8 {
+    // Generate request ID
+    var id_buf: [16]u8 = undefined;
+    @memset(&id_buf, 'g');
+    const id_str = &id_buf;
+
+    // Build request JSON
+    var request_json: std.Io.Writer.Allocating = .init(
+        allocator,
+    );
+    defer request_json.deinit();
+    const pw = &request_json.writer;
+
+    try pw.writeAll("{\"id\":\"");
+    try pw.writeAll(id_str);
+    try pw.writeAll("\",\"token\":\"");
+    try writeJsonEscaped(pw, token_raw);
+    try pw.writeAll("\",\"op\":\"git\"");
+    try pw.writeAll(",\"params\":{\"path\":\"");
+    try writeJsonEscaped(pw, path);
+    try pw.writeAll("\",\"args\":[");
+
+    for (git_args, 0..) |arg, idx| {
+        if (idx > 0) try pw.writeAll(",");
+        try pw.writeAll("\"");
+        try writeJsonEscaped(pw, arg);
+        try pw.writeAll("\"");
+    }
+
+    try pw.writeAll("]}}");
+
+    // Send via IPC
+    const response_data = ipc_client.sendRequest(
+        allocator,
+        environ,
+        request_json.written(),
+    ) catch |err| {
+        return switch (err) {
+            ipc_client.IpcError.DaemonNotRunning => {
+                return error.NotConnected;
+            },
+            ipc_client.IpcError.ConnectionFailed => {
+                return error.ConnectionClosed;
+            },
+            ipc_client.IpcError.OutOfMemory => {
+                return error.OutOfMemory;
+            },
+            else => error.ConnectionError,
+        };
+    };
+
+    return response_data;
 }
 
 /// Sends a request via IPC to the agent daemon and parses the response.
@@ -1135,7 +1391,7 @@ test "handleInitialize returns capabilities" {
     try std.testing.expectEqualStrings("2.0", parsed.value.jsonrpc);
     const info = parsed.value.result.serverInfo;
     try std.testing.expectEqualStrings("clawgate", info.name);
-    try std.testing.expectEqualStrings("0.1.0", info.version);
+    try std.testing.expectEqualStrings("0.2.0", info.version);
 }
 
 test "handleToolsList returns all tools" {
@@ -1160,7 +1416,7 @@ test "handleToolsList returns all tools" {
     );
     defer parsed.deinit();
 
-    try std.testing.expectEqual(@as(usize, 4), parsed.value.result.tools.len);
+    try std.testing.expectEqual(@as(usize, 5), parsed.value.result.tools.len);
     try std.testing.expectEqualStrings(
         "clawgate_read_file",
         parsed.value.result.tools[0].name,
@@ -1176,6 +1432,10 @@ test "handleToolsList returns all tools" {
     try std.testing.expectEqualStrings(
         "clawgate_stat",
         parsed.value.result.tools[3].name,
+    );
+    try std.testing.expectEqualStrings(
+        "clawgate_git",
+        parsed.value.result.tools[4].name,
     );
 }
 

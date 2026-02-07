@@ -2,7 +2,7 @@
 # ClawGate release builder - cross-compile for all targets
 set -e
 
-VERSION="${1:-0.1.0}"
+VERSION="${1:-0.2.0}"
 DIST_DIR="dist"
 
 echo "Building ClawGate ${VERSION}..."

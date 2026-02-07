@@ -1,6 +1,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.16+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
-[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://github.com/M64GitHub/clawgate/releases)
+[![Version](https://img.shields.io/badge/version-0.2.0-green.svg)](https://github.com/M64GitHub/clawgate/releases)
 [![GitHub Release](https://img.shields.io/github/v/release/M64GitHub/clawgate?include_prereleases)](https://github.com/M64GitHub/clawgate/releases/latest)
 
 # ClawGate
@@ -9,7 +9,7 @@
     🦞⛓️ Secure file access for isolated AI agents ⛓️🦞
 </p>
 
-**ClawGate** lets AI agents running on isolated machines securely access files on your primary machine. Instead of mounting filesystems or sharing credentials, ClawGate uses cryptographically signed capability tokens with fine-grained, time-bounded, audited access control.
+**ClawGate** lets AI agents running on isolated machines securely access files and run git commands on your primary machine. Instead of mounting filesystems or sharing credentials, ClawGate uses cryptographically signed capability tokens with fine-grained, time-bounded, audited access control.
 
 Think of it as **SSH keys meet JWT tokens meet capability-based security** - designed specifically for the AI agent era.
 
@@ -30,7 +30,7 @@ But now your agent needs to read your project files. Your options?
 
 ## The Solution
 
-ClawGate provides **secure, scoped, audited file access** over direct TCP with end-to-end encryption:
+ClawGate provides **secure, scoped, audited file and git access** over direct TCP with end-to-end encryption:
 
 **Key principles:**
 - **Zero trust** - Assumes the agent machine is compromised
@@ -78,6 +78,8 @@ The agent needs your public key to verify token signatures.
 **4. Grant access** (on your laptop):
 ```bash
 clawgate grant --read ~/projects --ttl 24h
+# Or with git access:
+clawgate grant --git ~/projects --ttl 24h
 # Outputs a token - copy it to the agent machine
 ```
 
@@ -95,7 +97,7 @@ clawgate --mode agent
 clawgate --mode resource --connect <agent-ip>:4223
 ```
 
-**Done.** Your agent can now securely read files in `~/projects`.
+**Done.** Your agent can now securely read files (and run git commands, if granted) in `~/projects`.
 
 ## OpenClaw Integration
 
@@ -109,6 +111,8 @@ Add the skill file: copy `skills/clawgate/SKILL.md` to your workspace.
 clawgate cat ~/projects/app/src/main.zig
 clawgate ls ~/projects/app/src/
 clawgate write ~/projects/app/notes.md --content "TODO: refactor"
+clawgate git ~/projects/app status
+clawgate git ~/projects/app diff HEAD~3
 ```
 
 ### Example Interaction
@@ -142,14 +146,14 @@ When you run `clawgate grant`, you create a **capability token** - a JWT signed 
   "cg": {
     "cap": [{
       "r": "files",
-      "o": ["read", "list", "stat"],
+      "o": ["read", "list", "stat", "git"],
       "s": "/home/mario/projects/**"
     }]
   }
 }
 ```
 
-This token says: *"The agent on mario-minipc can read, list, and stat files under `/home/mario/projects/` until the expiry time."*
+This token says: *"The agent on mario-minipc can read, list, and stat files, and run read-only git commands under `/home/mario/projects/` until the expiry time."*
 
 The token is **self-contained** - the resource daemon validates the signature and checks permissions without any database lookup.
 
@@ -160,6 +164,9 @@ clawgate grant --read /home/mario/file.txt      # Exact file
 clawgate grant --read /home/mario/projects/*    # Direct children only
 clawgate grant --read /home/mario/projects/**   # Recursive (all descendants)
 clawgate grant --read /home/mario/projects/*.zig # Glob pattern
+clawgate grant --git /home/mario/projects/**    # Git read-only + file read
+clawgate grant --git-write /home/mario/projects/** # Git read+write
+clawgate grant --git-full /home/mario/projects/**  # Git full (+ push/pull)
 ```
 
 ### Audit Trail
@@ -179,6 +186,28 @@ Denied operations fail immediately on the agent daemon:
 Error: No token grants list access to /etc/hosts
 ```
 
+### Git Operations
+
+ClawGate supports running git commands on repositories hosted on your primary machine with three permission tiers:
+
+| Tier | Grant Flag | Allows |
+|------|-----------|--------|
+| **Read-only** | `--git` | status, diff, log, show, blame, branch (list), ... |
+| **Write** | `--git-write` | add, commit, checkout, merge, rebase, reset, ... |
+| **Full** | `--git-full` | push, pull, fetch, remote add/remove, submodule |
+
+```bash
+# Grant git read-only access
+clawgate grant --git ~/projects/** --ttl 24h
+
+# Run git commands from the agent
+clawgate git ~/projects/myapp status
+clawgate git ~/projects/myapp log --oneline -20
+clawgate git ~/projects/myapp diff HEAD~3
+```
+
+**Security:** Git commands run through allowlists with blocked flags (`-c`, `--exec-path`, `--git-dir`, `--work-tree`) to prevent scope escapes and arbitrary code execution. See the [Design Document](docs/DESIGN.md) for the full allowlist specification.
+
 ## Features
 
 | Feature | Description |
@@ -189,6 +218,8 @@ Error: No token grants list access to /etc/hosts
 | **Time-bounded tokens** | 1h, 24h, 7d - you choose |
 | **Complete audit trail** | Every operation logged with token ID |
 | **Forbidden paths** | `~/.ssh`, `~/.aws`, `~/.gnupg` can NEVER be granted |
+| **Git operations** | Three-tier git access: read-only, write, full (push/pull) |
+| **Git command allowlists** | Defense-in-depth with blocked flags and subcommands |
 | **Large file handling** | Files >512KB automatically truncated with metadata |
 | 🦞 **OpenClaw native** | Skill file included |
 | **Symlink protection** | Symlinks rejected to prevent scope escape attacks |
@@ -212,6 +243,7 @@ ClawGate is a **security tool**. We take this seriously.
 | **Authentication** | Ed25519 signed tokens |
 | **Authorization** | Per-request scope validation |
 | **Path safety** | Canonicalization, traversal protection |
+| **Git allowlists** | Tiered command allowlists, blocked flags (`-c`, `--exec`) |
 | **Symlink rejection** | All symlinks unconditionally rejected |
 | **Forbidden paths** | ~/.ssh, ~/.aws, ~/.gnupg - hardcoded, ungrantable |
 | **Time limits** | Tokens expire, limiting blast radius |
@@ -245,6 +277,9 @@ Capability Management (primary machine):
   clawgate grant [opts] <path>      Grant access to path
     --read                          Allow read operations
     --write                         Allow write operations
+    --git                           Git read-only (+ read, list, stat)
+    --git-write                     Git read+write (+ file write)
+    --git-full                      Git full access (+ push/pull/fetch)
     --ttl <duration>                Token lifetime (2h, 24h, 7d)
   clawgate keygen                   Generate Ed25519 keypair
 
@@ -258,6 +293,7 @@ File Operations (agent machine):
   clawgate ls <path>                List directory
   clawgate write <path>             Write file (stdin or --content)
   clawgate stat <path>              Get file info
+  clawgate git <repo> <args...>     Run git command
 
 Monitoring:
   clawgate audit                    Watch audit log
@@ -326,6 +362,7 @@ ClawGate is split into two cooperating sides: the **resource side** (your laptop
   - Verifies capability token signatures
   - Enforces scope and permissions
   - Executes file operations (read, list, stat, write)
+  - Executes git commands (with tiered allowlists)
   - Writes audit events
 
 **Protected Resources**
@@ -374,6 +411,7 @@ ClawGate is split into two cooperating sides: the **resource side** (your laptop
 - [x] Capability token system
 - [x] CLI commands
 - [x] MCP server for Claude Code, etc.
+- [x] Git operations (three-tier: read-only, write, full)
 - [ ] Setup wizard (`clawgate setup`)
 - [ ] Web dashboard for audit viewing
 - [ ] Token revocation list

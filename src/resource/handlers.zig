@@ -9,6 +9,7 @@ const token_mod = @import("../capability/token.zig");
 const crypto = @import("../capability/crypto.zig");
 const scope = @import("../capability/scope.zig");
 const files = @import("files.zig");
+const git_mod = @import("git.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -26,6 +27,10 @@ pub const ErrorCode = struct {
     pub const NOT_A_DIRECTORY = "NOT_A_DIRECTORY";
     pub const IS_SYMLINK = "IS_SYMLINK";
     pub const INTERNAL_ERROR = "INTERNAL_ERROR";
+    pub const GIT_ERROR = "GIT_ERROR";
+    pub const GIT_BLOCKED = "GIT_BLOCKED";
+    pub const GIT_NOT_REPO = "GIT_NOT_REPO";
+    pub const GIT_TIMEOUT = "GIT_TIMEOUT";
 };
 
 pub const HandlerError = error{
@@ -142,7 +147,12 @@ pub fn handleRequest(
     var canonical_req = req;
     canonical_req.params.path = canonical_path;
 
-    return dispatchOperation(allocator, io, canonical_req) catch |err| {
+    return dispatchOperation(
+        allocator,
+        io,
+        canonical_req,
+        &tok,
+    ) catch |err| {
         return mapFileError(allocator, req.id, err) catch {
             return HandlerError.OutOfMemory;
         };
@@ -154,6 +164,7 @@ fn dispatchOperation(
     allocator: Allocator,
     io: Io,
     req: protocol.Request,
+    tok: *const token_mod.Token,
 ) ![]const u8 {
     if (std.mem.eql(u8, req.op, "read")) {
         return executeRead(allocator, io, req);
@@ -163,6 +174,8 @@ fn dispatchOperation(
         return executeList(allocator, io, req);
     } else if (std.mem.eql(u8, req.op, "stat")) {
         return executeStat(allocator, io, req);
+    } else if (std.mem.eql(u8, req.op, "git")) {
+        return executeGitOp(allocator, io, req, tok);
     } else {
         return protocol.formatError(
             allocator,
@@ -256,6 +269,121 @@ fn executeStat(
 
     return protocol.formatSuccess(allocator, req.id, .{
         .stat = result,
+    });
+}
+
+/// Executes a git operation with tier-based permission checks.
+fn executeGitOp(
+    allocator: Allocator,
+    io: Io,
+    req: protocol.Request,
+    tok: *const token_mod.Token,
+) ![]const u8 {
+    const args = req.params.args orelse {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.INVALID_REQUEST,
+            "Missing git args",
+        );
+    };
+
+    if (args.len == 0) {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.INVALID_REQUEST,
+            "Empty git args",
+        );
+    }
+
+    // Classify subcommand to determine required tier
+    const tier = git_mod.classifySubcommand(args);
+    if (tier == .blocked) {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.GIT_BLOCKED,
+            "Git command not allowed",
+        );
+    }
+
+    // Check token has the required permission tier
+    const required_op = git_mod.requiredOp(tier);
+    if (!tok.allows("files", required_op, req.params.path)) {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.SCOPE_VIOLATION,
+            "Insufficient git permissions",
+        );
+    }
+
+    // Validate args against blocked flags
+    git_mod.validateArgs(args) catch |err| {
+        return switch (err) {
+            git_mod.GitError.BlockedArg => protocol.formatError(
+                allocator,
+                req.id,
+                ErrorCode.GIT_BLOCKED,
+                "Blocked git argument",
+            ),
+            git_mod.GitError.EmptyArgs => protocol.formatError(
+                allocator,
+                req.id,
+                ErrorCode.INVALID_REQUEST,
+                "Empty git args",
+            ),
+            else => protocol.formatError(
+                allocator,
+                req.id,
+                ErrorCode.GIT_ERROR,
+                "Git validation error",
+            ),
+        };
+    };
+
+    // Execute git command
+    var result = git_mod.executeGit(
+        allocator,
+        io,
+        req.params.path,
+        args,
+    ) catch |err| {
+        return switch (err) {
+            git_mod.GitError.SpawnFailed => protocol.formatError(
+                allocator,
+                req.id,
+                ErrorCode.GIT_ERROR,
+                "Failed to execute git",
+            ),
+            git_mod.GitError.OutputTooLong => protocol.formatError(
+                allocator,
+                req.id,
+                ErrorCode.GIT_ERROR,
+                "Git output too large",
+            ),
+            git_mod.GitError.OutOfMemory => protocol.formatError(
+                allocator,
+                req.id,
+                ErrorCode.INTERNAL_ERROR,
+                "Out of memory",
+            ),
+            else => protocol.formatError(
+                allocator,
+                req.id,
+                ErrorCode.GIT_ERROR,
+                "Git execution error",
+            ),
+        };
+    };
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    return protocol.formatSuccess(allocator, req.id, .{
+        .git = result,
     });
 }
 
@@ -377,6 +505,16 @@ fn mapFileError(
         files.FileError.OutOfMemory => .{
             ErrorCode.INTERNAL_ERROR,
             "Out of memory",
+        },
+        git_mod.GitError.SpawnFailed => .{
+            ErrorCode.GIT_ERROR,
+            "Failed to execute git",
+        },
+        git_mod.GitError.BlockedCommand,
+        git_mod.GitError.BlockedArg,
+        => .{
+            ErrorCode.GIT_BLOCKED,
+            "Blocked git command or argument",
         },
         else => .{
             ErrorCode.INTERNAL_ERROR,

@@ -28,6 +28,8 @@ pub const Params = struct {
     mode: ?[]const u8 = null,
     /// Directory listing depth
     depth: ?u8 = null,
+    /// Git command arguments (for op="git")
+    args: ?[]const []const u8 = null,
 };
 
 /// A file operation request.
@@ -86,12 +88,25 @@ pub const StatResult = struct {
     modified: []const u8,
 };
 
+/// Result of a git operation.
+pub const GitResult = struct {
+    /// Git stdout output
+    stdout: []const u8,
+    /// Git stderr output
+    stderr: []const u8,
+    /// Git process exit code
+    exit_code: u8,
+    /// True if output was truncated
+    truncated: bool,
+};
+
 /// Union of all possible result types.
 pub const Result = union(enum) {
     read: ReadResult,
     write: WriteResult,
     list: ListResult,
     stat: StatResult,
+    git: GitResult,
 };
 
 /// Error details in a response.
@@ -124,8 +139,10 @@ pub const ParsedRequest = struct {
     }
 };
 
-/// Valid file operations.
-const valid_operations = [_][]const u8{ "read", "write", "list", "stat" };
+/// Valid operations.
+const valid_operations = [_][]const u8{
+    "read", "write", "list", "stat", "git",
+};
 
 /// Parses JSON bytes into a Request.
 pub fn parseRequest(
@@ -212,6 +229,19 @@ pub fn formatResponse(allocator: Allocator, response: Response) ![]const u8 {
                         s.type,
                         s.size,
                         s.modified,
+                    },
+                );
+            },
+            .git => |g| {
+                try writer.writeAll("{\"stdout\":\"");
+                try writeJsonEscaped(writer, g.stdout);
+                try writer.writeAll("\",\"stderr\":\"");
+                try writeJsonEscaped(writer, g.stderr);
+                try writer.print(
+                    "\",\"exit_code\":{d},\"truncated\":{s}}}",
+                    .{
+                        g.exit_code,
+                        if (g.truncated) "true" else "false",
                     },
                 );
             },
