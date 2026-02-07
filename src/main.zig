@@ -15,7 +15,7 @@ const file_cmds = @import("cli/file_cmds.zig");
 const git_cmd = @import("cli/git_cmd.zig");
 const audit_cmd = @import("cli/audit.zig");
 
-pub const version = "0.2.1";
+pub const version = "0.2.2";
 
 /// Main entry point using Zig 0.16's std.process.Init.
 pub fn main(init: std.process.Init) !void {
@@ -324,7 +324,7 @@ fn printUsage() void {
 
 test "version string is valid" {
     try std.testing.expect(version.len > 0);
-    try std.testing.expect(std.mem.eql(u8, version, "0.2.1"));
+    try std.testing.expect(std.mem.eql(u8, version, "0.2.2"));
 }
 
 test {

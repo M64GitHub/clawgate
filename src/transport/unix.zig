@@ -3,9 +3,12 @@
 //! Provides Server and Connection abstractions for local IPC between
 //! CLI/MCP processes and the agent daemon. Uses the same 4-byte
 //! big-endian length-prefixed framing as the TCP transport.
+//! Cross-platform: works on Linux and macOS.
 
 const std = @import("std");
-const linux = std.os.linux;
+const builtin = @import("builtin");
+const posix = std.posix;
+const system = posix.system;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const Dir = Io.Dir;
@@ -19,8 +22,10 @@ const LENGTH_PREFIX_SIZE: usize = 4;
 /// Read/write buffer size.
 const BUFFER_SIZE: usize = 64 * 1024;
 
-/// Maximum path length for Unix socket.
-const MAX_PATH_LEN: usize = 107;
+/// Maximum path length for Unix socket (platform-dependent).
+const MAX_PATH_LEN: usize = @typeInfo(
+    std.meta.fieldInfo(posix.sockaddr.un, .path).type,
+).array.len - 1;
 
 pub const UnixError = error{
     MessageTooLarge,
@@ -37,15 +42,15 @@ pub const UnixError = error{
     PermissionDenied,
 };
 
-/// A Unix domain socket connection with length-prefixed message framing.
+/// A Unix domain socket connection with length-prefixed framing.
 pub const Connection = struct {
-    fd: linux.fd_t,
+    fd: posix.fd_t,
     read_buffer: [BUFFER_SIZE]u8,
     read_pos: usize,
     read_end: usize,
 
     /// Creates a Connection from an existing file descriptor.
-    pub fn init(fd: linux.fd_t) Connection {
+    pub fn init(fd: posix.fd_t) Connection {
         return .{
             .fd = fd,
             .read_buffer = undefined,
@@ -64,16 +69,26 @@ pub const Connection = struct {
         var len_bytes: [LENGTH_PREFIX_SIZE]u8 = undefined;
         std.mem.writeInt(u32, &len_bytes, len, .big);
 
-        writeAll(self.fd, &len_bytes) catch return UnixError.WriteFailed;
-        writeAll(self.fd, data) catch return UnixError.WriteFailed;
+        sysWriteAll(self.fd, &len_bytes) catch
+            return UnixError.WriteFailed;
+        sysWriteAll(self.fd, data) catch
+            return UnixError.WriteFailed;
     }
 
     /// Receives a length-prefixed message.
-    pub fn recv(self: *Connection, allocator: Allocator) UnixError![]u8 {
+    pub fn recv(
+        self: *Connection,
+        allocator: Allocator,
+    ) UnixError![]u8 {
         var len_bytes: [LENGTH_PREFIX_SIZE]u8 = undefined;
-        self.readExact(&len_bytes) catch return UnixError.ConnectionClosed;
+        self.readExact(&len_bytes) catch
+            return UnixError.ConnectionClosed;
 
-        const message_len = std.mem.readInt(u32, &len_bytes, .big);
+        const message_len = std.mem.readInt(
+            u32,
+            &len_bytes,
+            .big,
+        );
 
         if (message_len > MAX_MESSAGE_SIZE) {
             return UnixError.MessageTooLarge;
@@ -104,16 +119,19 @@ pub const Connection = struct {
         while (total < buf.len) {
             if (self.read_pos < self.read_end) {
                 const available = self.read_end - self.read_pos;
-                const to_copy = @min(available, buf.len - total);
+                const to_copy = @min(
+                    available,
+                    buf.len - total,
+                );
                 const src = self.read_buffer[self.read_pos..][0..to_copy];
                 @memcpy(buf[total..][0..to_copy], src);
                 self.read_pos += to_copy;
                 total += to_copy;
             } else {
-                const rc = linux.read(self.fd, &self.read_buffer, BUFFER_SIZE);
-                const err = linux.errno(rc);
-                if (err != .SUCCESS) return error.ReadFailed;
-                const n: usize = @intCast(rc);
+                const n = posix.read(
+                    self.fd,
+                    &self.read_buffer,
+                ) catch return error.ReadFailed;
                 if (n == 0) return error.ConnectionClosed;
                 self.read_pos = 0;
                 self.read_end = n;
@@ -123,17 +141,17 @@ pub const Connection = struct {
 
     /// Closes the connection.
     pub fn close(self: *Connection) void {
-        _ = linux.close(self.fd);
+        posix.close(self.fd);
     }
 };
 
 /// A Unix domain socket server.
 pub const Server = struct {
-    fd: linux.fd_t,
+    fd: posix.fd_t,
     path: []const u8,
     path_owned: bool,
 
-    /// Binds to a Unix socket path.
+    /// Binds to a Unix socket path (non-blocking accept).
     pub fn bind(
         allocator: Allocator,
         io: Io,
@@ -150,33 +168,27 @@ pub const Server = struct {
 
         removeStaleSocket(io, path);
 
-        const rc_socket = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM, 0);
-        const socket_err = linux.errno(rc_socket);
-        if (socket_err != .SUCCESS) return UnixError.BindFailed;
+        const fd = sysSocket(
+            posix.AF.UNIX,
+            posix.SOCK.STREAM,
+            0,
+        ) orelse return UnixError.BindFailed;
+        errdefer posix.close(fd);
 
-        const fd: linux.fd_t = @intCast(rc_socket);
-        errdefer _ = linux.close(fd);
+        setNonBlocking(fd) catch
+            return UnixError.BindFailed;
 
-        var addr: linux.sockaddr.un = .{
-            .family = linux.AF.UNIX,
-            .path = undefined,
-        };
-        @memset(&addr.path, 0);
-        @memcpy(addr.path[0..path.len], path);
-
-        const rc_bind = linux.bind(
+        var addr = makeUnixAddr(path);
+        sysBind(
             fd,
             @ptrCast(&addr),
-            @sizeOf(linux.sockaddr.un),
-        );
-        const bind_err = linux.errno(rc_bind);
-        if (bind_err != .SUCCESS) return UnixError.BindFailed;
+            @sizeOf(posix.sockaddr.un),
+        ) orelse return UnixError.BindFailed;
 
-        const rc_listen = linux.listen(fd, 128);
-        const listen_err = linux.errno(rc_listen);
-        if (listen_err != .SUCCESS) return UnixError.BindFailed;
+        sysListen(fd, 128) orelse
+            return UnixError.BindFailed;
 
-        setSocketPermissions(io, path);
+        sysChmod(path);
 
         return .{
             .fd = fd,
@@ -185,18 +197,20 @@ pub const Server = struct {
         };
     }
 
-    /// Accepts a new connection.
+    /// Accepts a new connection (non-blocking).
     pub fn accept(self: *Server) UnixError!Connection {
-        const rc = linux.accept(self.fd, null, null);
-        const err = linux.errno(rc);
-        if (err != .SUCCESS) return UnixError.AcceptFailed;
-        const client_fd: linux.fd_t = @intCast(rc);
-        return Connection.init(client_fd);
+        const fd = sysAccept(self.fd) orelse
+            return UnixError.AcceptFailed;
+        return Connection.init(fd);
     }
 
     /// Closes the server and removes the socket file.
-    pub fn close(self: *Server, allocator: Allocator, io: Io) void {
-        _ = linux.close(self.fd);
+    pub fn close(
+        self: *Server,
+        allocator: Allocator,
+        io: Io,
+    ) void {
+        posix.close(self.fd);
         Dir.deleteFile(.cwd(), io, self.path) catch {};
         if (self.path_owned) {
             allocator.free(self.path);
@@ -210,79 +224,173 @@ pub fn connect(path: []const u8) UnixError!Connection {
         return UnixError.PathTooLong;
     }
 
-    const rc_socket = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM, 0);
-    const socket_err = linux.errno(rc_socket);
-    if (socket_err != .SUCCESS) return UnixError.ConnectFailed;
+    const fd = sysSocket(
+        posix.AF.UNIX,
+        posix.SOCK.STREAM,
+        0,
+    ) orelse return UnixError.ConnectFailed;
+    errdefer posix.close(fd);
 
-    const fd: linux.fd_t = @intCast(rc_socket);
-    errdefer _ = linux.close(fd);
+    var addr = makeUnixAddr(path);
 
-    var addr: linux.sockaddr.un = .{
-        .family = linux.AF.UNIX,
-        .path = undefined,
-    };
-    @memset(&addr.path, 0);
-    @memcpy(addr.path[0..path.len], path);
-
-    const rc_connect = linux.connect(
+    posix.connect(
         fd,
         @ptrCast(&addr),
-        @sizeOf(linux.sockaddr.un),
-    );
-    const connect_err = linux.errno(rc_connect);
-    if (connect_err != .SUCCESS) {
-        return switch (connect_err) {
-            .NOENT => UnixError.SocketNotFound,
-            .ACCES => UnixError.PermissionDenied,
+        @sizeOf(posix.sockaddr.un),
+    ) catch |err| {
+        return switch (err) {
+            error.FileNotFound => UnixError.SocketNotFound,
+            error.AccessDenied => UnixError.PermissionDenied,
             else => UnixError.ConnectFailed,
         };
-    }
+    };
 
     return Connection.init(fd);
 }
 
 /// Returns the default socket path for ClawGate IPC.
-/// Uses $XDG_RUNTIME_DIR/clawgate.sock if available, otherwise
-/// /tmp/clawgate-$UID.sock.
 pub fn getSocketPath(
     allocator: Allocator,
     environ: std.process.Environ,
 ) ![]const u8 {
     if (environ.getPosix("XDG_RUNTIME_DIR")) |dir| {
-        return std.fmt.allocPrint(allocator, "{s}/clawgate.sock", .{dir});
+        return std.fmt.allocPrint(
+            allocator,
+            "{s}/clawgate.sock",
+            .{dir},
+        );
     }
 
-    const uid = linux.getuid();
-    return std.fmt.allocPrint(allocator, "/tmp/clawgate-{d}.sock", .{uid});
+    const uid = sysGetuid();
+    return std.fmt.allocPrint(
+        allocator,
+        "/tmp/clawgate-{d}.sock",
+        .{uid},
+    );
 }
 
-/// Removes a stale socket file if it exists.
-fn removeStaleSocket(io: Io, path: []const u8) void {
-    Dir.deleteFile(.cwd(), io, path) catch {};
+// -- Cross-platform syscall helpers --
+
+/// Creates a Unix socket addr from a path.
+fn makeUnixAddr(path: []const u8) posix.sockaddr.un {
+    var addr: posix.sockaddr.un = .{
+        .family = posix.AF.UNIX,
+        .path = undefined,
+    };
+    // macOS sockaddr.un has a len field
+    if (@hasField(posix.sockaddr.un, "len")) {
+        addr.len = @sizeOf(posix.sockaddr.un);
+    }
+    @memset(&addr.path, 0);
+    @memcpy(addr.path[0..path.len], path);
+    return addr;
 }
 
-/// Sets socket file permissions to 0600 (owner only).
-fn setSocketPermissions(io: Io, path: []const u8) void {
-    _ = io;
+/// Sets a file descriptor to non-blocking mode via fcntl.
+fn setNonBlocking(fd: posix.fd_t) !void {
+    var fl = posix.fcntl(fd, posix.F.GETFL, 0) catch
+        return error.FcntlFailed;
+    fl |= 1 << @bitOffsetOf(posix.O, "NONBLOCK");
+    _ = posix.fcntl(fd, posix.F.SETFL, fl) catch
+        return error.FcntlFailed;
+}
+
+/// Cross-platform socket().
+fn sysSocket(
+    domain: u32,
+    sock_type: u32,
+    protocol: u32,
+) ?posix.fd_t {
+    const rc = system.socket(domain, sock_type, protocol);
+    return sysToFd(rc);
+}
+
+/// Cross-platform bind().
+fn sysBind(
+    fd: posix.fd_t,
+    addr: *const posix.sockaddr,
+    len: posix.socklen_t,
+) ?void {
+    const rc = system.bind(fd, addr, len);
+    return if (sysIsSuccess(rc)) {} else null;
+}
+
+/// Cross-platform listen().
+fn sysListen(fd: posix.fd_t, backlog: u32) ?void {
+    const rc = system.listen(fd, @intCast(backlog));
+    return if (sysIsSuccess(rc)) {} else null;
+}
+
+/// Cross-platform accept().
+fn sysAccept(fd: posix.fd_t) ?posix.fd_t {
+    const rc = system.accept(fd, null, null);
+    return sysToFd(rc);
+}
+
+/// Cross-platform write(). Returns bytes written.
+fn sysWrite(
+    fd: posix.fd_t,
+    data: []const u8,
+) ?usize {
+    const rc = system.write(fd, data.ptr, data.len);
+    const T = @TypeOf(rc);
+    if (T == usize) {
+        if (std.os.linux.errno(rc) != .SUCCESS) return null;
+        return rc;
+    } else {
+        if (rc < 0) return null;
+        return @intCast(rc);
+    }
+}
+
+/// Cross-platform chmod on a path.
+fn sysChmod(path: []const u8) void {
     var path_buf: [108]u8 = undefined;
     if (path.len >= path_buf.len) return;
     @memcpy(path_buf[0..path.len], path);
     path_buf[path.len] = 0;
     const cpath: [*:0]const u8 = @ptrCast(&path_buf);
-    _ = linux.chmod(cpath, 0o600);
+    _ = system.chmod(cpath, 0o600);
+}
+
+/// Cross-platform getuid().
+fn sysGetuid() u32 {
+    const rc = system.getuid();
+    const T = @TypeOf(rc);
+    if (T == u32) return rc;
+    return @intCast(rc);
+}
+
+/// Checks if a raw syscall return value indicates success.
+fn sysIsSuccess(rc: anytype) bool {
+    const T = @TypeOf(rc);
+    if (T == usize) {
+        return std.os.linux.errno(rc) == .SUCCESS;
+    } else {
+        return rc >= 0;
+    }
+}
+
+/// Converts a raw syscall return value to an fd.
+fn sysToFd(rc: anytype) ?posix.fd_t {
+    if (!sysIsSuccess(rc)) return null;
+    return @intCast(rc);
 }
 
 /// Writes all bytes to a file descriptor.
-fn writeAll(fd: linux.fd_t, data: []const u8) !void {
+fn sysWriteAll(fd: posix.fd_t, data: []const u8) !void {
     var written: usize = 0;
     while (written < data.len) {
-        const rc = linux.write(fd, data[written..].ptr, data.len - written);
-        const err = linux.errno(rc);
-        if (err != .SUCCESS) return error.WriteFailed;
-        const n: usize = @intCast(rc);
+        const n = sysWrite(fd, data[written..]) orelse
+            return error.WriteFailed;
         if (n == 0) return error.WriteFailed;
         written += n;
     }
+}
+
+/// Removes a stale socket file if it exists.
+fn removeStaleSocket(io: Io, path: []const u8) void {
+    Dir.deleteFile(.cwd(), io, path) catch {};
 }
 
 // Tests
@@ -291,7 +399,11 @@ test "length prefix encode/decode" {
     const len: u32 = 0x12345678;
     var buf: [4]u8 = undefined;
     std.mem.writeInt(u32, &buf, len, .big);
-    try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x34, 0x56, 0x78 }, &buf);
+    try std.testing.expectEqualSlices(
+        u8,
+        &.{ 0x12, 0x34, 0x56, 0x78 },
+        &buf,
+    );
 
     const decoded = std.mem.readInt(u32, &buf, .big);
     try std.testing.expectEqual(len, decoded);
@@ -303,8 +415,12 @@ test "getSocketPath fallback" {
     const path = try getSocketPath(allocator, .empty);
     defer allocator.free(path);
 
-    try std.testing.expect(std.mem.startsWith(u8, path, "/tmp/clawgate-"));
-    try std.testing.expect(std.mem.endsWith(u8, path, ".sock"));
+    try std.testing.expect(
+        std.mem.startsWith(u8, path, "/tmp/clawgate-"),
+    );
+    try std.testing.expect(
+        std.mem.endsWith(u8, path, ".sock"),
+    );
 }
 
 test "path too long" {
@@ -314,14 +430,19 @@ test "path too long" {
 }
 
 test "connect to nonexistent socket" {
-    const result = connect("/tmp/nonexistent-clawgate-test.sock");
+    const result = connect(
+        "/tmp/nonexistent-clawgate-test.sock",
+    );
     try std.testing.expectError(UnixError.SocketNotFound, result);
 }
 
 test "server bind and accept" {
     const allocator = std.testing.allocator;
 
-    var threaded: Io.Threaded = .init(allocator, .{ .environ = .empty });
+    var threaded: Io.Threaded = .init(
+        allocator,
+        .{ .environ = .empty },
+    );
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -331,26 +452,8 @@ test "server bind and accept" {
     var server = try Server.bind(allocator, io, path);
     defer server.close(allocator, io);
 
-    const rc_socket = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM, 0);
-    const socket_err = linux.errno(rc_socket);
-    if (socket_err != .SUCCESS) return;
-    const client_fd: linux.fd_t = @intCast(rc_socket);
-    defer _ = linux.close(client_fd);
-
-    var addr: linux.sockaddr.un = .{
-        .family = linux.AF.UNIX,
-        .path = undefined,
-    };
-    @memset(&addr.path, 0);
-    @memcpy(addr.path[0..path.len], path);
-
-    const rc_connect = linux.connect(
-        client_fd,
-        @ptrCast(&addr),
-        @sizeOf(linux.sockaddr.un),
-    );
-    const connect_err = linux.errno(rc_connect);
-    if (connect_err != .SUCCESS) return;
+    var client = try connect(path);
+    defer client.close();
 
     var server_conn = try server.accept();
     defer server_conn.close();
@@ -359,7 +462,10 @@ test "server bind and accept" {
 test "send and receive message" {
     const allocator = std.testing.allocator;
 
-    var threaded: Io.Threaded = .init(allocator, .{ .environ = .empty });
+    var threaded: Io.Threaded = .init(
+        allocator,
+        .{ .environ = .empty },
+    );
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -387,7 +493,10 @@ test "send and receive message" {
 test "bidirectional communication" {
     const allocator = std.testing.allocator;
 
-    var threaded: Io.Threaded = .init(allocator, .{ .environ = .empty });
+    var threaded: Io.Threaded = .init(
+        allocator,
+        .{ .environ = .empty },
+    );
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -419,7 +528,10 @@ test "bidirectional communication" {
 test "empty message" {
     const allocator = std.testing.allocator;
 
-    var threaded: Io.Threaded = .init(allocator, .{ .environ = .empty });
+    var threaded: Io.Threaded = .init(
+        allocator,
+        .{ .environ = .empty },
+    );
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -446,7 +558,10 @@ test "empty message" {
 test "multiple messages" {
     const allocator = std.testing.allocator;
 
-    var threaded: Io.Threaded = .init(allocator, .{ .environ = .empty });
+    var threaded: Io.Threaded = .init(
+        allocator,
+        .{ .environ = .empty },
+    );
     defer threaded.deinit();
     const io = threaded.io();
 
