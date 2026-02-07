@@ -12,9 +12,10 @@ const setup = @import("cli/setup.zig");
 const grant_cmd = @import("cli/grant.zig");
 const token_cmd = @import("cli/token.zig");
 const file_cmds = @import("cli/file_cmds.zig");
+const git_cmd = @import("cli/git_cmd.zig");
 const audit_cmd = @import("cli/audit.zig");
 
-pub const version = "0.1.0";
+pub const version = "0.2.0";
 
 /// Main entry point using Zig 0.16's std.process.Init.
 pub fn main(init: std.process.Init) !void {
@@ -99,6 +100,16 @@ pub fn main(init: std.process.Init) !void {
         };
     } else if (std.mem.eql(u8, cmd, "stat")) {
         file_cmds.stat(
+            allocator,
+            io,
+            cmd_args,
+            home,
+            init.minimal.environ,
+        ) catch {
+            std.process.exit(1);
+        };
+    } else if (std.mem.eql(u8, cmd, "git")) {
+        git_cmd.git(
             allocator,
             io,
             cmd_args,
@@ -289,6 +300,7 @@ fn printUsage() void {
         \\  clawgate ls <path>                List directory
         \\  clawgate write <path>             Write file (stdin or --content)
         \\  clawgate stat <path>              Get file info
+        \\  clawgate git <repo> <args...>     Run git command
         \\
         \\Monitoring:
         \\  clawgate audit                    Watch audit log
@@ -312,7 +324,7 @@ fn printUsage() void {
 
 test "version string is valid" {
     try std.testing.expect(version.len > 0);
-    try std.testing.expect(std.mem.eql(u8, version, "0.1.0"));
+    try std.testing.expect(std.mem.eql(u8, version, "0.2.0"));
 }
 
 test {
@@ -327,6 +339,7 @@ test {
     _ = @import("protocol/handshake.zig");
     _ = @import("resource/files.zig");
     _ = @import("resource/handlers.zig");
+    _ = @import("resource/git.zig");
     _ = @import("resource/daemon.zig");
     _ = @import("agent/tokens.zig");
     _ = @import("agent/daemon.zig");
@@ -336,6 +349,7 @@ test {
     _ = @import("cli/grant.zig");
     _ = @import("cli/token.zig");
     _ = @import("cli/file_cmds.zig");
+    _ = @import("cli/git_cmd.zig");
     _ = @import("cli/audit.zig");
     _ = @import("config/config.zig");
 }

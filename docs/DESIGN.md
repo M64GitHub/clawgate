@@ -1,21 +1,23 @@
 # ClawGate Design Document
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Status:** Implementation Complete
 
 ## Executive Summary
 
-ClawGate is a secure bridge enabling isolated AI agents to access files on a
-user's primary machine through capability-based, auditable access control.
-The system uses Ed25519-signed JWT tokens for fine-grained permissions and
-X25519/XChaCha20-Poly1305 end-to-end encryption over direct TCP connections.
+ClawGate is a secure bridge enabling isolated AI agents to access files and
+run git commands on a user's primary machine through capability-based,
+auditable access control. The system uses Ed25519-signed JWT tokens for
+fine-grained permissions and X25519/XChaCha20-Poly1305 end-to-end encryption
+over direct TCP connections.
 
 **Key properties:**
 - Capability-based access control with scoped, time-limited tokens
 - End-to-end encryption with forward secrecy
 - Outbound-only connections from the trusted machine
 - Hardcoded forbidden paths for sensitive credentials
-- Audit trail of successful file operations on the resource daemon
+- Three-tier git permissions with command allowlists
+- Audit trail of successful file and git operations on the resource daemon
 
 ## Document Scope
 
@@ -30,8 +32,8 @@ and deployment scenarios. For quick-start usage, see the README.
 ClawGate consists of four main components:
 
 1. **Resource Daemon** - Runs on the primary machine (your laptop/workstation).
-   Connects outbound to the agent, validates tokens, executes file operations,
-   and maintains the audit log.
+   Connects outbound to the agent, validates tokens, executes file and git
+   operations, and maintains the audit log.
 
 2. **Agent Daemon** - Runs on the isolated machine (AI agent environment).
    Listens for connections, stores capability tokens, and proxies requests
@@ -390,7 +392,7 @@ Only EdDSA (Ed25519) algorithm is accepted. Any other algorithm is rejected.
 | `cg.v` | u8 | ClawGate claims version (currently 1) |
 | `cg.cap` | array | Array of capability grants |
 | `cg.cap[].r` | string | Resource type (always `"files"`) |
-| `cg.cap[].o` | array | Operations: `read`, `write`, `list`, `stat` |
+| `cg.cap[].o` | array | Operations: `read`, `write`, `list`, `stat`, `git`, `git_write`, `git_remote` |
 | `cg.cap[].s` | string | Scope pattern (glob) |
 
 ### Scope Patterns
@@ -580,7 +582,7 @@ All subsequent messages are encrypted.
 |-------|------|-------------|
 | `id` | string | Unique request ID for correlation |
 | `token` | string | JWT capability token |
-| `op` | string | Operation: `read`, `write`, `list`, `stat` |
+| `op` | string | Operation: `read`, `write`, `list`, `stat`, `git` |
 | `params` | object | Operation-specific parameters |
 
 **Operation Parameters:**
@@ -596,6 +598,8 @@ All subsequent messages are encrypted.
 | list | path | string | Absolute directory path |
 | list | depth | u32? | Listing depth (default: 1) |
 | stat | path | string | Absolute path |
+| git | path | string | Absolute repository path |
+| git | args | string[] | Git arguments (e.g. `["status", "--short"]`) |
 
 ### Response Format
 
@@ -658,6 +662,16 @@ Stat:
 }
 ```
 
+Git:
+```json
+{
+  "stdout": "M  src/main.zig\n?? new_file.txt\n",
+  "stderr": "",
+  "exit_code": 0,
+  "truncated": false
+}
+```
+
 ### Error Codes
 
 | Code | Description |
@@ -674,7 +688,176 @@ Stat:
 | `NOT_A_FILE` | Expected file, got directory |
 | `NOT_A_DIRECTORY` | Expected directory, got file |
 | `IS_SYMLINK` | Symlinks not allowed |
+| `GIT_ERROR` | Git command execution failed |
+| `GIT_BLOCKED` | Git command or flag blocked by allowlist |
+| `GIT_NOT_REPO` | Target path is not a git repository |
+| `GIT_TIMEOUT` | Git command timed out |
 | `INTERNAL_ERROR` | Unexpected server error |
+
+---
+
+## Git Operations
+
+### Overview
+
+ClawGate supports executing git commands on repositories hosted on the
+primary machine. Git operations use a three-tier permission model with
+command allowlists for defense in depth.
+
+### Permission Tiers
+
+| Tier | Token Operation | Grants | Example Commands |
+|------|----------------|--------|-----------------|
+| **Read-only** | `git` | Read-only git ops | status, diff, log, show, branch (list), blame |
+| **Write** | `git_write` | Mutating git ops | add, commit, checkout, merge, rebase, reset |
+| **Remote** | `git_remote` | Remote git ops | push, pull, fetch, remote add/remove |
+
+Each tier implies the previous: `git_remote` > `git_write` > `git`.
+
+### Grant CLI Flags
+
+```bash
+clawgate grant --git ~/projects/**       # git (read-only) + file read/list/stat
+clawgate grant --git-write ~/projects/** # + git_write + file write
+clawgate grant --git-full ~/projects/**  # + git_remote
+```
+
+### Request Format
+
+```json
+{
+  "id": "req_abc123",
+  "token": "<jwt>",
+  "op": "git",
+  "params": {
+    "path": "/home/mario/projects/myapp",
+    "args": ["diff", "--stat", "HEAD~3"]
+  }
+}
+```
+
+### Response Format
+
+```json
+{
+  "id": "req_abc123",
+  "ok": true,
+  "result": {
+    "stdout": " src/main.zig | 5 ++---\n 1 file changed\n",
+    "stderr": "",
+    "exit_code": 0,
+    "truncated": false
+  }
+}
+```
+
+Output is truncated at 512 KB (same as file reads). The `truncated` flag
+indicates when output was cut short.
+
+### Command Allowlists
+
+#### Tier 1: `git` (read-only)
+
+```
+status, diff, log, show, branch (list only), tag (list only),
+rev-parse, ls-files, ls-tree, blame, shortlog, describe,
+name-rev, rev-list, cat-file, diff-tree, diff-files, diff-index,
+for-each-ref, symbolic-ref, stash list, remote (-v, show),
+config --get/--get-all/--list (read-only config)
+```
+
+#### Tier 2: `git_write` (mutating)
+
+All of tier 1 plus:
+```
+add, commit, checkout, switch, merge, rebase, reset, stash
+(save/pop/apply/drop), cherry-pick, revert, clean, rm, mv,
+restore, branch (create/delete), tag (create/delete), am, apply,
+format-patch, notes, config (set)
+```
+
+#### Tier 3: `git_remote` (remote)
+
+All of tier 1 + tier 2 plus:
+```
+push, pull, fetch, remote (add/remove/set-url), submodule, clone
+```
+
+### Blocked Flags
+
+These top-level git flags are **always rejected** (all tiers):
+
+| Flag | Reason |
+|------|--------|
+| `-c` | Arbitrary config override (e.g. `core.fsmonitor`) |
+| `--exec-path` | Arbitrary executable path |
+| `--git-dir` | Escape scope to different repository |
+| `--work-tree` | Escape scope to different directory |
+| `-C` | We set cwd ourselves; prevent confusion |
+
+Per-subcommand blocks:
+
+| Subcommand + Flag | Reason |
+|-------------------|--------|
+| `rebase --exec` | Runs arbitrary shell commands |
+| `am --exec` | Runs arbitrary shell commands |
+| `diff --ext-diff` | Runs external diff program |
+| `config --global` | Modify system-wide config |
+| `config --system` | Modify system-wide config |
+| `filter-branch` | Always blocked (runs shell commands) |
+
+### Validation Flow
+
+```
+Receive Git Request
+       |
+       v
+  Extract subcommand from args
+       |
+       v
+  Classify subcommand tier
+  (read / write / remote / blocked)
+       |
+  [Blocked?] --Yes--> Reject: GIT_BLOCKED
+       |
+       No
+       v
+  Check token has required tier
+  (git / git_write / git_remote)
+       |
+  [Insufficient?] --Yes--> Reject: ACCESS_DENIED
+       |
+       No
+       v
+  Validate args against blocked flags
+       |
+  [Blocked flag?] --Yes--> Reject: GIT_BLOCKED
+       |
+       No
+       v
+  Verify .git/ exists in repo path
+       |
+  [Not a repo?] --Yes--> Reject: GIT_NOT_REPO
+       |
+       No
+       v
+  Execute: git -C <repo_path> <args...>
+       |
+       v
+  Return GitResult (stdout, stderr, exit_code)
+```
+
+### Security Considerations
+
+1. **Git runs on the resource daemon** (trusted machine) using the user's
+   own git config and credentials
+2. **Command allowlists** prevent arbitrary code execution via git hooks
+   and exec flags
+3. **Forbidden paths** still apply - git can't access `~/.ssh/` etc.
+4. **Scope validation** - git only runs in token-scoped directories
+5. **Output truncation at 512 KB** prevents memory exhaustion
+6. **`--git-dir`/`--work-tree` blocked** prevents pointing git at repos
+   outside scope
 
 ---
 
@@ -701,6 +884,7 @@ capabilities via JSON-RPC 2.0 over stdio.
 | `clawgate_write_file` | Write file contents |
 | `clawgate_list_directory` | List directory entries |
 | `clawgate_stat` | Get file/directory metadata |
+| `clawgate_git` | Run git commands on the primary machine |
 
 ### Example Session
 
@@ -725,6 +909,16 @@ capabilities via JSON-RPC 2.0 over stdio.
 
 // Response
 {"jsonrpc": "2.0", "id": 3, "result": {"content": "..."}}
+
+// Request (git)
+{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {
+  "name": "clawgate_git",
+  "arguments": {"path": "/home/mario/projects/myapp",
+                "args": ["status", "--short"]}
+}}
+
+// Response
+{"jsonrpc": "2.0", "id": 4, "result": {"content": "M src/main.zig\n"}}
 ```
 
 ## Configuration
@@ -998,6 +1192,9 @@ clawgate grant [options] <path>
   -w, --write              Allow write
   --list                   Allow list only
   --stat                   Allow stat only
+  --git                    Git read-only (+ read, list, stat)
+  --git-write              Git read+write (+ file write)
+  --git-full               Git full access (+ push/pull/fetch)
   -t, --ttl <duration>     Token lifetime (default: 24h)
   -k, --key <path>         Secret key path
   --issuer <id>            Issuer identity
@@ -1054,6 +1251,21 @@ clawgate write <path>
 clawgate stat <path>
   -d, --token-dir <dir>    Token directory
   --json                   Output as JSON
+```
+
+### Git Operations
+
+```bash
+# Run git commands
+clawgate git <repo-path> <git-args...>
+  -d, --token-dir <dir>    Token directory
+
+# Examples:
+clawgate git ~/projects/myapp status
+clawgate git ~/projects/myapp diff HEAD~3
+clawgate git ~/projects/myapp log --oneline -20
+clawgate git ~/projects/myapp commit -m "fix bug"
+clawgate git ~/projects/myapp push origin main
 ```
 
 ### Monitoring
@@ -1142,5 +1354,9 @@ Consider using shorter TTLs if revocation needs are anticipated.
 | NOT_A_FILE | 400 | Operation requires file, got directory |
 | NOT_A_DIRECTORY | 400 | Operation requires directory, got file |
 | IS_SYMLINK | 403 | Symlinks not permitted |
+| GIT_ERROR | 500 | Git command execution failed |
+| GIT_BLOCKED | 403 | Git command or flag blocked by allowlist |
+| GIT_NOT_REPO | 400 | Target path is not a git repository |
+| GIT_TIMEOUT | 504 | Git command timed out |
 | INTERNAL_ERROR | 500 | Unexpected server error |
 

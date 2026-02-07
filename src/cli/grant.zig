@@ -31,6 +31,12 @@ pub const GrantConfig = struct {
     list: bool = false,
     /// Allow stat operations (implied by read)
     stat: bool = false,
+    /// Allow git read-only operations
+    git: bool = false,
+    /// Allow git write operations
+    git_write: bool = false,
+    /// Allow git remote operations
+    git_full: bool = false,
     /// Token TTL in seconds (default: 24h)
     ttl_seconds: i64 = 24 * 60 * 60,
     /// Path to secret key
@@ -101,6 +107,26 @@ pub fn grant(
             }
             i += 1;
             config.subject = args[i];
+        } else if (std.mem.eql(u8, arg, "--git")) {
+            config.git = true;
+            config.read = true;
+            config.list = true;
+            config.stat = true;
+        } else if (std.mem.eql(u8, arg, "--git-write")) {
+            config.git = true;
+            config.git_write = true;
+            config.read = true;
+            config.write = true;
+            config.list = true;
+            config.stat = true;
+        } else if (std.mem.eql(u8, arg, "--git-full")) {
+            config.git = true;
+            config.git_write = true;
+            config.git_full = true;
+            config.read = true;
+            config.write = true;
+            config.list = true;
+            config.stat = true;
         } else if (std.mem.eql(u8, arg, "--help") or
             std.mem.eql(u8, arg, "-h"))
         {
@@ -122,7 +148,8 @@ pub fn grant(
     }
 
     if (!config.read and !config.write and
-        !config.list and !config.stat)
+        !config.list and !config.stat and
+        !config.git)
     {
         std.debug.print("Error: At least one operation is required\n\n", .{});
         printGrantUsage();
@@ -154,7 +181,7 @@ pub fn grant(
     defer std.crypto.secureZero(u8, &secret_key);
 
     // Build operations list
-    var ops_buf: [4][]const u8 = undefined;
+    var ops_buf: [7][]const u8 = undefined;
     var ops_count: usize = 0;
     if (config.read) {
         ops_buf[ops_count] = "read";
@@ -170,6 +197,18 @@ pub fn grant(
     }
     if (config.stat) {
         ops_buf[ops_count] = "stat";
+        ops_count += 1;
+    }
+    if (config.git) {
+        ops_buf[ops_count] = "git";
+        ops_count += 1;
+    }
+    if (config.git_write) {
+        ops_buf[ops_count] = "git_write";
+        ops_count += 1;
+    }
+    if (config.git_full) {
+        ops_buf[ops_count] = "git_remote";
         ops_count += 1;
     }
 
@@ -249,6 +288,9 @@ fn printGrantUsage() void {
         \\  -w, --write           Allow write operations
         \\      --list            Allow list operations only
         \\      --stat            Allow stat operations only
+        \\      --git             Git read-only (+ read, list, stat)
+        \\      --git-write       Git read+write (+ file write)
+        \\      --git-full        Git full access (+ push/pull/fetch)
         \\
         \\Options:
         \\  -t, --ttl <duration>  Token lifetime (default: 24h)
@@ -267,6 +309,9 @@ fn printGrantUsage() void {
         \\  clawgate grant --read /home/mario/projects/**
         \\  clawgate grant --read --write --ttl 1h /tmp/shared/*
         \\  clawgate grant -r -t 7d /data/** > token.txt
+        \\  clawgate grant --git ~/projects/**
+        \\  clawgate grant --git-write ~/projects/**
+        \\  clawgate grant --git-full ~/projects/**
         \\
     ;
     std.debug.print("{s}", .{usage});

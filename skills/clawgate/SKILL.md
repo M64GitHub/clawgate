@@ -1,6 +1,6 @@
-# ClawGate - Secure File Access
+# ClawGate - Secure File & Git Access
 
-Access files on the user's primary machine through ClawGate's secure E2E encrypted bridge.
+Access files and run git commands on the user's primary machine through ClawGate's secure E2E encrypted bridge.
 
 ## Available Commands
 
@@ -56,6 +56,48 @@ Returns file metadata: exists, type, size, modified timestamp.
 Options:
 - `--json` - Output as JSON
 
+### Git Commands
+```bash
+clawgate git <repo-path> <git-args...>
+```
+Runs git commands on a repository on the user's primary machine. The repository path must be within the granted scope.
+
+**Three permission tiers** (each includes the previous):
+
+**Read-only** (`--git` token) - inspect without modifying:
+```bash
+clawgate git /home/user/project status
+clawgate git /home/user/project diff HEAD~3
+clawgate git /home/user/project log --oneline -20
+clawgate git /home/user/project show abc1234
+clawgate git /home/user/project blame src/main.zig
+clawgate git /home/user/project branch
+clawgate git /home/user/project stash list
+```
+
+**Write** (`--git-write` token) - modify local repository:
+```bash
+clawgate git /home/user/project add src/main.zig
+clawgate git /home/user/project commit -m "fix: resolve edge case"
+clawgate git /home/user/project checkout -b feature/new
+clawgate git /home/user/project merge main
+clawgate git /home/user/project rebase main
+clawgate git /home/user/project stash pop
+```
+
+**Full** (`--git-full` token) - interact with remotes:
+```bash
+clawgate git /home/user/project push origin main
+clawgate git /home/user/project pull origin main
+clawgate git /home/user/project fetch --all
+```
+
+Output behavior:
+- stdout and stderr are returned separately
+- Output is truncated at 512KB
+- Git's exit code is preserved (non-zero = failure)
+- 30 second timeout per command
+
 ### Check Token Status
 ```bash
 clawgate token list
@@ -84,6 +126,35 @@ clawgate cat --offset 10000 --length 10000 /path/to/large.log
 clawgate ls --depth 3 /home/user/projects | grep "README"
 ```
 
+### Check repo state before working
+```bash
+clawgate git /home/user/project status --short
+clawgate git /home/user/project log --oneline -5
+clawgate git /home/user/project diff --stat
+```
+
+### Review and commit changes
+```bash
+clawgate git /home/user/project diff src/main.zig
+clawgate git /home/user/project add src/main.zig
+clawgate git /home/user/project commit -m "fix: handle edge case in parser"
+```
+
+### Explore git history
+```bash
+clawgate git /home/user/project log --oneline -20
+clawgate git /home/user/project show abc1234
+clawgate git /home/user/project blame src/main.zig
+clawgate git /home/user/project diff HEAD~3..HEAD
+```
+
+### Sync with remote
+```bash
+clawgate git /home/user/project pull origin main
+# ... make changes ...
+clawgate git /home/user/project push origin feature/fix
+```
+
 ### Blind drop (write-only access)
 If granted `--write` without `--read`, you can leave files but can't peek:
 ```bash
@@ -108,6 +179,9 @@ You can only access paths the user has explicitly granted. The capability token 
 **Permission types:**
 - `read` - Read file contents, list directories, stat files
 - `write` - Create, overwrite, or append to files
+- `git` - Read-only git operations (status, diff, log, show, blame, ...)
+- `git_write` - Mutating git operations (add, commit, checkout, merge, rebase, ...)
+- `git_remote` - Remote git operations (push, pull, fetch)
 
 **Scope patterns:**
 - `/home/user/file.txt` - Exact file only
@@ -140,8 +214,14 @@ If an operation is denied, you'll receive an error with a code:
 | `NOT_FOUND` | File or directory doesn't exist |
 | `IS_SYMLINK` | Path is a symbolic link (symlinks are rejected) |
 | `CONNECTION_CLOSED` | Resource daemon not running |
+| `GIT_BLOCKED` | Git command or flag not in allowlist |
+| `GIT_NOT_REPO` | Path is not a git repository |
+| `GIT_ERROR` | Git command execution failed |
+| `GIT_TIMEOUT` | Git command exceeded 30s timeout |
 
 When access is denied, inform the user they may need to grant additional access.
+
+**Git-specific:** If you get `GIT_BLOCKED`, the command or a flag you used is not allowed. Some flags are always blocked for security: `-c`, `--git-dir`, `--work-tree`, `--exec-path`, `rebase --exec`, `diff --ext-diff`, `config --global`. The command `filter-branch` is always blocked.
 
 ---
 
@@ -158,6 +238,15 @@ clawgate grant --write "/tmp/output/**" --ttl 24h
 
 # Both
 clawgate grant --read --write "/path/to/project/**" --ttl 24h
+
+# Git read-only (includes file read/list/stat)
+clawgate grant --git "/path/to/repo/**" --ttl 24h
+
+# Git read+write (includes file read+write)
+clawgate grant --git-write "/path/to/repo/**" --ttl 8h
+
+# Git full access (includes push/pull/fetch)
+clawgate grant --git-full "/path/to/repo/**" --ttl 4h
 ```
 
 **Hot reload:** Tokens can be added while running - no restart needed!
@@ -179,9 +268,11 @@ Agent Machine                    Primary Machine
      │     X25519 + XChaCha20          │
      │                                 ├─ Scope validation (3rd gate)
      │                                 │
-     │                                 ├─ Forbidden paths (final gate)
+     │                                 ├─ Forbidden paths (4th gate)
      │                                 │
-     │◄─────── File contents ──────────┤
+     │                                 ├─ Git allowlist (5th gate)
+     │                                 │
+     │◄─────── File/git output ────────┤
 ```
 
 - **Zero trust** - Assumes agent machine may be compromised
@@ -191,4 +282,4 @@ Agent Machine                    Primary Machine
 
 ---
 
-*ClawGate - Secure file access for the AI agent era* 🦞
+*ClawGate - Secure file & git access for the AI agent era* 🦞
