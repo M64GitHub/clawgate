@@ -1,6 +1,6 @@
 # ClawGate Design Document
 
-**Version:** 0.2.2
+**Version:** 0.2.3
 **Status:** Implementation Complete
 
 ## Executive Summary
@@ -1185,6 +1185,34 @@ clawgate token remove <id>
 # Show token details
 clawgate token show <id>
   -d, --token-dir <dir>    Token directory
+```
+
+Example output:
+
+```
+$ clawgate token list
+Stored tokens (6):
+
+  ID:      cg_9ae7ce62f4a5b869a8c120fa
+  Issuer:  clawgate:resource
+  Subject: clawgate:agent
+  Scope:   ~/space/ai/remembra/** [read, list, stat, git]
+  Expires: 2026-02-08T05:51:26Z
+  Status:  Valid
+  ...
+
+$ clawgate token show cg_7ab54be138936dfb8d29b81d
+Token: cg_7ab54be138936dfb8d29b81d
+
+  Issuer:  clawgate:resource
+  Subject: clawgate:agent
+  Issued:  2026-02-07T06:02:28Z
+  Expires: 2026-02-08T06:02:28Z
+
+  Capabilities:
+    - files: ~/space/ai/tiger-style [read, list, stat, git]
+
+  Status: Valid
 ```
 
 ### File Operations

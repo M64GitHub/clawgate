@@ -174,7 +174,7 @@ fn formatTimestampBuf(buf: *[20]u8) []const u8 {
 }
 
 /// Formats an epoch seconds value into ISO 8601.
-fn formatEpochBuf(buf: *[20]u8, secs: u64) []const u8 {
+pub fn formatEpochBuf(buf: *[20]u8, secs: u64) []const u8 {
     const epoch = std.time.epoch.EpochSeconds{ .secs = secs };
     const day = epoch.getEpochDay();
     const year_day = day.calculateYearDay();

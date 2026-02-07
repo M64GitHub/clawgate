@@ -8,6 +8,7 @@
 const std = @import("std");
 const tokens_mod = @import("../agent/tokens.zig");
 const token_mod = @import("../capability/token.zig");
+const audit_log = @import("../resource/audit_log.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const Dir = std.Io.Dir;
@@ -280,6 +281,18 @@ fn tokenList(
                 std.debug.print("]\n", .{});
             }
 
+            var exp_buf: [20]u8 = undefined;
+            if (payload.exp >= 0) {
+                const exp_str = audit_log.formatEpochBuf(
+                    &exp_buf,
+                    @intCast(payload.exp),
+                );
+                std.debug.print(
+                    "  Expires: {s}\n",
+                    .{exp_str},
+                );
+            }
+
             if (expired) {
                 std.debug.print("  Status:  EXPIRED\n", .{});
             } else {
@@ -414,8 +427,34 @@ fn tokenShow(
             std.debug.print("Token: {s}\n\n", .{payload.jti});
             std.debug.print("  Issuer:  {s}\n", .{payload.iss});
             std.debug.print("  Subject: {s}\n", .{payload.sub});
-            std.debug.print("  Issued:  {d}\n", .{payload.iat});
-            std.debug.print("  Expires: {d}\n", .{payload.exp});
+            var iat_buf: [20]u8 = undefined;
+            var exp_buf: [20]u8 = undefined;
+            if (payload.iat >= 0) {
+                std.debug.print("  Issued:  {s}\n", .{
+                    audit_log.formatEpochBuf(
+                        &iat_buf,
+                        @intCast(payload.iat),
+                    ),
+                });
+            } else {
+                std.debug.print(
+                    "  Issued:  {d}\n",
+                    .{payload.iat},
+                );
+            }
+            if (payload.exp >= 0) {
+                std.debug.print("  Expires: {s}\n", .{
+                    audit_log.formatEpochBuf(
+                        &exp_buf,
+                        @intCast(payload.exp),
+                    ),
+                });
+            } else {
+                std.debug.print(
+                    "  Expires: {d}\n",
+                    .{payload.exp},
+                );
+            }
             std.debug.print("\n  Capabilities:\n", .{});
             for (payload.cg.cap) |cap| {
                 std.debug.print("    - {s}: {s} [", .{ cap.r, cap.s });

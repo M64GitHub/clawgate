@@ -1,6 +1,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.16+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
-[![Version](https://img.shields.io/badge/version-0.2.2-green.svg)](https://github.com/M64GitHub/clawgate/releases)
+[![Version](https://img.shields.io/badge/version-0.2.3-green.svg)](https://github.com/M64GitHub/clawgate/releases)
 [![GitHub Release](https://img.shields.io/github/v/release/M64GitHub/clawgate)](https://github.com/M64GitHub/clawgate/releases/latest)
 
 # ClawGate
@@ -289,6 +289,7 @@ Capability Management (primary machine):
 Token Management (agent machine):
   clawgate token add <token>        Add a capability token
   clawgate token list               List stored tokens
+  clawgate token show <id>          Show token details
   clawgate token remove <id>        Remove a token
 
 File Operations (agent machine):
@@ -319,6 +320,33 @@ https://clawgate.io
 > For example, `clawgate grant` shows all grant options including `--list`,
 > `--stat`, `-k/--key`, `--issuer`, and `--subject`.
 
+### Example: Token Listing
+
+```
+$ clawgate token list
+Stored tokens (6):
+
+  ID:      cg_9ae7ce62f4a5b869a8c120fa
+  Issuer:  clawgate:resource
+  Subject: clawgate:agent
+  Scope:   ~/space/ai/remembra/** [read, list, stat, git]
+  Expires: 2026-02-08T05:51:26Z
+  Status:  Valid
+  ...
+
+$ clawgate token show cg_7ab54be138936dfb8d29b81d
+Token: cg_7ab54be138936dfb8d29b81d
+
+  Issuer:  clawgate:resource
+  Subject: clawgate:agent
+  Issued:  2026-02-07T06:02:28Z
+  Expires: 2026-02-08T06:02:28Z
+
+  Capabilities:
+    - files: ~/space/ai/tiger-style [read, list, stat, git]
+
+  Status: Valid
+```
 
 ## Architecture
 

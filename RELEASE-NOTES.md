@@ -1,65 +1,45 @@
-# ClawGate v0.2.2 Release Notes
+# ClawGate v0.2.3 Release Notes
 
-This release adds persistent audit logging on the resource daemon,
-fixes a critical agent daemon reconnection bug, and migrates the IPC
-transport to cross-platform POSIX for macOS support.
+This release adds human-readable expiration dates to token management
+commands, making it easy to see when tokens expire at a glance.
 
-## Audit Log
+## Token Expiration Display
 
-The resource daemon now writes a persistent audit log to
-`~/.clawgate/logs/audit.log`. Every request is recorded with
-timestamp, request ID, operation, path, and success/error status.
+`clawgate token list` and `clawgate token show` now display expiration
+(and issuance) timestamps as ISO 8601 dates instead of raw Unix
+timestamps.
 
-**Format:**
+**`token list` output:**
 ```
-<timestamp> AUDIT req=<id> op=<op> path=<path> success=<bool> [error=<code>]
+$ clawgate token list
+Stored tokens (6):
+
+  ID:      cg_9ae7ce62f4a5b869a8c120fa
+  Issuer:  clawgate:resource
+  Subject: clawgate:agent
+  Scope:   ~/space/ai/remembra/** [read, list, stat, git]
+  Expires: 2026-02-08T05:51:26Z
+  Status:  Valid
 ```
 
-**CLI command:**
-```bash
-clawgate audit          # View audit log summary and recent entries
+**`token show` output:**
+```
+$ clawgate token show cg_7ab54be138936dfb8d29b81d
+Token: cg_7ab54be138936dfb8d29b81d
+
+  Issuer:  clawgate:resource
+  Subject: clawgate:agent
+  Issued:  2026-02-07T06:02:28Z
+  Expires: 2026-02-08T06:02:28Z
+
+  Capabilities:
+    - files: ~/space/ai/tiger-style [read, list, stat, git]
+
+  Status: Valid
 ```
 
-### Files Added/Changed
+### Files Changed
 
-**New files:**
-- `src/resource/audit_log.zig` - Audit log writer with atomic append
-- `src/cli/audit.zig` - `clawgate audit` CLI command
-
-**Modified files:**
-- `src/resource/daemon.zig` - Audit log initialization and per-request logging
-- `src/main.zig` - `audit` command routing
-
-## Agent Daemon Reconnection Fix
-
-Fixed a critical bug where the agent daemon would hang permanently after
-the resource daemon disconnected. The agent could not accept new
-connections and had to be restarted manually.
-
-**Root cause:** The IPC service loop had no way to detect TCP
-disconnection. It blocked on IPC accept calls and never checked the
-health of the TCP connection to the resource daemon.
-
-**Fix:** Rewrote the IPC service loop using Zig 0.16's `io.async()` +
-`io.select()` pattern to race IPC accept against TCP disconnect
-detection. The agent now detects resource daemon disconnection
-immediately and returns to accepting new connections.
-
-Additionally, `sendRequest()` now clears the connection state on
-failure, ensuring the IPC loop exits even if a CLI command discovers
-the dead connection first.
-
-## POSIX Portability
-
-Migrated `src/transport/unix.zig` from Linux-only `std.os.linux`
-syscalls to cross-platform POSIX. ClawGate now compiles and runs on
-both Linux and macOS.
-
-**Changes:**
-- All socket operations use `std.posix` / `std.posix.system` with
-  comptime type dispatch for Linux raw syscalls vs libc
-- Non-blocking server socket via `fcntl(F.SETFL, O.NONBLOCK)` instead
-  of `SOCK_NONBLOCK` (which macOS does not support)
-- Platform-derived `MAX_PATH_LEN` from `sockaddr.un` struct (108 on
-  Linux, 104 on macOS)
-- macOS `sockaddr.un.len` field handled via `@hasField` comptime check
+- `src/resource/audit_log.zig` - Made `formatEpochBuf` public for reuse
+- `src/cli/token.zig` - Added formatted expiration dates to list and
+  show commands
