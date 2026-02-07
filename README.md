@@ -439,7 +439,7 @@ MIT - see [LICENSE](LICENSE)
 
 <p align="center">
   <b>ClawGate</b> - Secure file access for the AI agent era<br>
-  Built with &lt;3 and Zig by <a href="https://github.com/M64GitHub">M64</a>  and <a href="https://github.com/EchoMaster128">Echo128 🦞</a><br>
+  Built with &lt;3 and Zig by <a href="https://github.com/M64GitHub">M64</a><br>Designed in cooperation with <a href="https://github.com/EchoMaster128">Echo128 🦞</a><br>
   <a href="https://clawgate.io">clawgate.io</a>
 </p>
 
