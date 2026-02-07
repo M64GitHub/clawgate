@@ -65,25 +65,24 @@ fn printAuditInfo() void {
     const info =
         \\Audit Log Information
         \\
-        \\ClawGate audit events are logged locally by the resource daemon.
-        \\Events are written to stderr with the prefix "AUDIT:".
+        \\ClawGate audit events are logged to:
+        \\  ~/.clawgate/logs/audit.log
         \\
-        \\To view audit logs on the resource machine:
+        \\Events are also printed to stderr by the resource daemon.
         \\
-        \\  # Run resource daemon and capture audit logs
-        \\  clawgate --mode resource 2>&1 | grep AUDIT
+        \\Log format:
+        \\  <timestamp> AUDIT req=<id> op=<op> path=<path> success=<bool> [error=<code>]
         \\
-        \\  # Or redirect to a file for later analysis
-        \\  clawgate --mode resource 2>&1 | tee clawgate.log
-        \\
-        \\Audit log format:
-        \\  AUDIT: req=<id> op=<operation> path=<path> success=<true|false>
+        \\Example:
+        \\  2026-02-07T14:30:45Z AUDIT req=req_12345 op=read path=/home/mario/file.txt success=true
+        \\  2026-02-07T14:30:46Z AUDIT req=req_12346 op=write path=/etc/shadow success=false error=SCOPE_VIOLATION
         \\
         \\Operations logged:
         \\  - read:  File read requests
         \\  - write: File write requests
         \\  - list:  Directory listing requests
         \\  - stat:  File/directory stat requests
+        \\  - git:   Git command requests
         \\
     ;
     std.debug.print("{s}", .{info});
@@ -96,9 +95,8 @@ fn printAuditUsage() void {
         \\
         \\Display audit log information.
         \\
-        \\In the E2E architecture, audit events are logged locally by the
-        \\resource daemon on the primary machine. This command provides
-        \\information about accessing those logs.
+        \\Audit events are written to ~/.clawgate/logs/audit.log by the
+        \\resource daemon. Events are also printed to stderr.
         \\
         \\Options:
         \\  -j, --json            (reserved for future use)

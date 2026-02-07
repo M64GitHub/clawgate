@@ -1,6 +1,6 @@
 # ClawGate Design Document
 
-**Version:** 0.2.1
+**Version:** 0.2.2
 **Status:** Implementation Complete
 
 ## Executive Summary
@@ -258,13 +258,22 @@ messages like "No token grants access") and never reach the resource daemon.
 This is a security feature - unauthorized requests are rejected before crossing
 the network.
 
-Successful operations that reach the resource daemon are logged with:
+Operations that reach the resource daemon are logged persistently to
+`~/.clawgate/logs/audit.log` with:
+- ISO 8601 UTC timestamp
 - Request ID for tracing
-- Operation type (read/write/list/stat)
+- Operation type (read/write/list/stat/git)
 - Target path
-- Timestamp
+- Success/failure status
+- Error code on failure (e.g., SCOPE_VIOLATION, INVALID_TOKEN)
 
-Logs are written to stderr with `AUDIT:` prefix.
+Events are also emitted to stderr via `std.log.info` with `AUDIT:` prefix.
+A `daemon_start` entry is written when the resource daemon starts.
+
+Log format:
+```
+<timestamp> AUDIT req=<id> op=<op> path=<path> success=<bool> [error=<code>]
+```
 
 ### Cryptographic Primitives
 
@@ -1224,14 +1233,17 @@ clawgate git ~/projects/myapp push origin main
 ### Monitoring
 
 ```bash
-# View audit info
+# View audit log info
 clawgate audit
 ```
 
-Audit events are logged to stderr with prefix `AUDIT:`:
+Audit events are logged to `~/.clawgate/logs/audit.log`:
 ```
-AUDIT: req=req_12345 op=read path=/home/mario/file.txt success=true
+2026-02-07T14:30:45Z AUDIT req=req_12345 op=read path=/home/mario/file.txt success=true
+2026-02-07T14:30:46Z AUDIT req=req_12346 op=write path=/etc/shadow success=false error=SCOPE_VIOLATION
 ```
+
+Events are also printed to stderr by the resource daemon.
 
 ## Operational Limits
 

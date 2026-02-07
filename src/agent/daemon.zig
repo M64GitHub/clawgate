@@ -76,10 +76,12 @@ pub fn sendRequest(
     const conn = state.active_connection orelse return DaemonError.NotConnected;
 
     conn.sendEncrypted(conn_alloc, request) catch {
+        state.clearConnection();
         return DaemonError.ConnectionClosed;
     };
 
     const response = conn.recvEncrypted(conn_alloc) catch {
+        state.clearConnection();
         return DaemonError.ConnectionClosed;
     };
 
@@ -291,7 +293,7 @@ fn acceptAndHandle(
 
     std.log.info("E2E session established: {s}", .{&session_id});
 
-    ipcServiceLoop(allocator, io, ipc);
+    ipcServiceLoop(allocator, io, ipc, &conn);
 
     state.clearConnection();
     enc_conn.deinit(allocator);
@@ -301,23 +303,99 @@ fn acceptAndHandle(
     std.log.info("Connection closed", .{});
 }
 
-/// Handles IPC requests while the E2E connection is active.
+/// Handles IPC requests while monitoring the TCP connection.
+/// Uses io.async + io.select to race IPC accept against TCP
+/// disconnect detection, so the agent can immediately detect
+/// when the resource daemon disconnects.
 fn ipcServiceLoop(
     conn_alloc: Allocator,
     io: Io,
     ipc: *unix.Server,
+    tcp_conn: *tcp.Connection,
 ) void {
     while (state.isConnected()) {
-        var ipc_conn = ipc.accept() catch {
-            io.sleep(.fromMilliseconds(IPC_POLL_INTERVAL_MS), .awake) catch {
+        var ipc_future = io.async(
+            doIpcAccept,
+            .{ ipc, io },
+        );
+        var tcp_future = io.async(
+            doTcpMonitor,
+            .{ tcp_conn, conn_alloc },
+        );
+
+        var winner: enum { none, ipc, tcp_mon } = .none;
+
+        defer if (winner != .ipc) {
+            if (ipc_future.cancel(io)) |mc| {
+                var c = mc;
+                c.close();
+            }
+        };
+        defer if (winner != .tcp_mon) {
+            tcp_future.cancel(io);
+        };
+
+        const result = io.select(.{
+            .ipc = &ipc_future,
+            .tcp_mon = &tcp_future,
+        }) catch {
+            state.clearConnection();
+            break;
+        };
+
+        switch (result) {
+            .ipc => |maybe_conn| {
+                winner = .ipc;
+                tcp_future.cancel(io);
+                if (maybe_conn) |mc| {
+                    var ipc_conn = mc;
+                    defer ipc_conn.close();
+                    handleIpcRequest(
+                        conn_alloc,
+                        &ipc_conn,
+                    );
+                }
+            },
+            .tcp_mon => {
+                winner = .tcp_mon;
+                if (ipc_future.cancel(io)) |mc| {
+                    var c = mc;
+                    c.close();
+                }
+                std.log.info(
+                    "Resource daemon disconnected",
+                    .{},
+                );
+                state.clearConnection();
                 break;
-            };
+            },
+        }
+    }
+}
+
+/// Async helper: polls IPC accept with sleep retry.
+fn doIpcAccept(
+    ipc: *unix.Server,
+    io: Io,
+) ?unix.Connection {
+    while (true) {
+        return ipc.accept() catch {
+            io.sleep(
+                .fromMilliseconds(IPC_POLL_INTERVAL_MS),
+                .awake,
+            ) catch return null;
             continue;
         };
-        defer ipc_conn.close();
-
-        handleIpcRequest(conn_alloc, &ipc_conn);
     }
+}
+
+/// Async helper: blocks on TCP recv until disconnect.
+fn doTcpMonitor(
+    conn: *tcp.Connection,
+    allocator: Allocator,
+) void {
+    const data = conn.recv(allocator) catch return;
+    allocator.free(data);
 }
 
 /// Handles a single IPC request.

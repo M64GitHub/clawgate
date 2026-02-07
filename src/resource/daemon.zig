@@ -11,6 +11,8 @@ const handlers = @import("handlers.zig");
 const crypto = @import("../capability/crypto.zig");
 const protocol = @import("../protocol/json.zig");
 const paths = @import("../path.zig");
+const audit_log = @import("audit_log.zig");
+const AuditLog = audit_log.AuditLog;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -76,12 +78,33 @@ pub fn runWithIo(
         .{ config.connect_addr, config.connect_port },
     );
 
+    const alog = AuditLog.init(allocator, io, home) catch |err| {
+        std.log.warn(
+            "Failed to init audit log: {}, continuing without",
+            .{err},
+        );
+        return error.AuditLogInitFailed;
+    };
+    defer alog.deinit(io);
+
     while (true) {
-        connectAndServe(allocator, io, config, public_key) catch |err| {
-            std.log.warn("Connection error: {}, reconnecting...", .{err});
+        connectAndServe(
+            allocator,
+            io,
+            config,
+            public_key,
+            &alog,
+        ) catch |err| {
+            std.log.warn(
+                "Connection error: {}, reconnecting...",
+                .{err},
+            );
         };
 
-        io.sleep(.fromMilliseconds(RECONNECT_DELAY_MS), .awake) catch {};
+        io.sleep(
+            .fromMilliseconds(RECONNECT_DELAY_MS),
+            .awake,
+        ) catch {};
     }
 }
 
@@ -91,6 +114,7 @@ fn connectAndServe(
     io: Io,
     config: Config,
     public_key: crypto.PublicKey,
+    alog: *const AuditLog,
 ) !void {
     std.log.info(
         "Connecting to agent at {s}:{d}",
@@ -195,7 +219,7 @@ fn connectAndServe(
 
     std.log.info("E2E session established: {s}", .{session_id});
 
-    mainLoop(allocator, io, &enc_conn, public_key, config);
+    mainLoop(allocator, io, &enc_conn, public_key, config, alog);
 }
 
 /// Main request processing loop. Runs until connection closes.
@@ -205,6 +229,7 @@ fn mainLoop(
     enc_conn: *handshake.EncryptedConnection,
     public_key: crypto.PublicKey,
     config: Config,
+    alog: *const AuditLog,
 ) void {
     while (true) {
         const request_json = enc_conn.recvEncrypted(allocator) catch |err| {
@@ -236,7 +261,12 @@ fn mainLoop(
             return;
         };
 
-        logAuditEvent(allocator, request_json, response_json);
+        alog.logEvent(
+            allocator,
+            io,
+            request_json,
+            response_json,
+        );
     }
 }
 
@@ -254,33 +284,6 @@ fn sendErrorResponse(
     defer allocator.free(error_json);
 
     enc_conn.sendEncrypted(allocator, error_json) catch {};
-}
-
-/// Logs an audit event for a completed request.
-fn logAuditEvent(
-    allocator: Allocator,
-    request_json: []const u8,
-    response_json: []const u8,
-) void {
-    var req_id: []const u8 = "unknown";
-    var op: []const u8 = "unknown";
-    var path: []const u8 = "unknown";
-
-    var parsed_req = protocol.parseRequest(allocator, request_json) catch null;
-    defer if (parsed_req) |*pr| pr.deinit();
-
-    if (parsed_req) |pr| {
-        req_id = pr.value.id;
-        op = pr.value.op;
-        path = pr.value.params.path;
-    }
-
-    const success = std.mem.indexOf(u8, response_json, "\"ok\":true") != null;
-
-    std.log.info(
-        "AUDIT: req={s} op={s} path={s} success={s}",
-        .{ req_id, op, path, if (success) "true" else "false" },
-    );
 }
 
 // Tests
@@ -454,44 +457,38 @@ test "full E2E session establishment" {
     try std.testing.expectEqualStrings(test_msg, decrypted);
 }
 
-test "audit logging" {
+test "audit logging via AuditLog" {
     const allocator = std.testing.allocator;
 
+    var threaded: Io.Threaded = .init(
+        allocator,
+        .{ .environ = .empty },
+    );
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const Dir = Io.Dir;
+    const tmp_path = Dir.realPathFileAlloc(
+        tmp.dir,
+        io,
+        ".",
+        allocator,
+    ) catch unreachable;
+    defer allocator.free(tmp_path);
+
+    const alog = try AuditLog.init(allocator, io, tmp_path);
+    defer alog.deinit(io);
+
     const request_json =
-        \\{"id":"req123","token":"t","op":"read","params":{"path":"/tmp/test"}}
+        \\{"id":"req123","token":"t","op":"read",
+    ++
+        \\"params":{"path":"/tmp/test"}}
     ;
+    const response_json =
+        "{\"id\":\"req123\",\"ok\":true,\"result\":{}}";
 
-    const response_json = "{\"id\":\"req123\",\"ok\":true,\"result\":{}}";
-
-    logAuditEvent(allocator, request_json, response_json);
-}
-
-test "format audit event - success case" {
-    const allocator = std.testing.allocator;
-
-    const request_json =
-        \\{"id":"req123","token":"t","op":"read","params":{"path":"/tmp/test.txt"}}
-    ;
-
-    const response_json = "{\"id\":\"req123\",\"ok\":true,\"result\":{}}";
-
-    var req_id: []const u8 = "unknown";
-    var op: []const u8 = "unknown";
-    var path: []const u8 = "unknown";
-
-    var parsed_req = protocol.parseRequest(allocator, request_json) catch null;
-    defer if (parsed_req) |*pr| pr.deinit();
-
-    if (parsed_req) |pr| {
-        req_id = pr.value.id;
-        op = pr.value.op;
-        path = pr.value.params.path;
-    }
-
-    const success = std.mem.indexOf(u8, response_json, "\"ok\":true") != null;
-
-    try std.testing.expectEqualStrings("req123", req_id);
-    try std.testing.expectEqualStrings("read", op);
-    try std.testing.expectEqualStrings("/tmp/test.txt", path);
-    try std.testing.expect(success);
+    alog.logEvent(allocator, io, request_json, response_json);
 }

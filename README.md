@@ -1,6 +1,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.16+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
-[![Version](https://img.shields.io/badge/version-0.2.1-green.svg)](https://github.com/M64GitHub/clawgate/releases)
+[![Version](https://img.shields.io/badge/version-0.2.2-green.svg)](https://github.com/M64GitHub/clawgate/releases)
 [![GitHub Release](https://img.shields.io/github/v/release/M64GitHub/clawgate)](https://github.com/M64GitHub/clawgate/releases/latest)
 
 # ClawGate
@@ -168,14 +168,14 @@ clawgate grant --git-full /home/mario/projects/**  # Git full (+ push/pull)
 
 ### Audit Trail
 
-Every successful operation is logged locally on the resource daemon:
+Every operation is logged persistently to `~/.clawgate/logs/audit.log` on the resource machine:
 
 ```
-info: AUDIT: req=req_1384782a2944c377 op=git path=/home/m64/space/ai/clawgate success=true
-info: AUDIT: req=req_79565e1ce32a2715 op=list path=/home/m64/space/ai/clawgate success=true
+2026-02-07T14:30:45Z AUDIT req=req_1384782a op=git path=/home/m64/space/ai/clawgate success=true
+2026-02-07T14:30:46Z AUDIT req=req_79565e1c op=read path=/etc/shadow success=false error=SCOPE_VIOLATION
 ```
 
-Denied operations fail immediately on the agent daemon:
+Events are also printed to stderr by the resource daemon. Denied operations that never reach the resource daemon fail immediately on the agent side:
 
 ```
 > clawgate ls /etc/hosts
@@ -219,7 +219,7 @@ clawgate git ~/projects/myapp diff HEAD~3
 | **End-to-end encryption** | X25519 + XChaCha20-Poly1305 with forward secrecy |
 | **Fine-grained access** | Grant `/projects/app/**` not "everything" |
 | **Time-bounded tokens** | 1h, 24h, 7d - you choose |
-| **Complete audit trail** | Every operation logged with token ID |
+| **Persistent audit trail** | Every operation logged to `~/.clawgate/logs/audit.log` |
 | **Forbidden paths** | `~/.ssh`, `~/.aws`, `~/.gnupg` can NEVER be granted |
 | **Git operations** | Three-tier git access: read-only, write, full (push/pull) |
 | **Git command allowlists** | Defense-in-depth with blocked flags and subcommands |
@@ -299,8 +299,8 @@ File Operations (agent machine):
   clawgate git <repo> <args...>     Run git command
 
 Monitoring:
-  clawgate audit                    Watch audit log
-  clawgate audit --json             Output as JSON
+  clawgate audit                    Show audit log file info
+  clawgate audit --json             Output as JSON (reserved)
 
 Daemon Options:
   --listen <addr:port>              Listen address (agent mode, default 0.0.0.0:4223)
