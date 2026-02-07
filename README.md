@@ -6,7 +6,7 @@
 # ClawGate
 
 <p align="center">                                                 
-    🦞⛓️ Secure file access for isolated AI agents ⛓️🦞
+    🦞⛓️ Secure file and git access for isolated AI agents ⛓️🦞
 </p>
 
 **ClawGate** lets AI agents running on isolated machines securely access files and run git commands on your primary machine. Instead of mounting filesystems or sharing credentials, ClawGate uses cryptographically signed capability tokens with fine-grained, time-bounded, audited access control.
