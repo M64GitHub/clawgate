@@ -170,10 +170,9 @@ clawgate grant --git-full /home/mario/projects/**  # Git full (+ push/pull)
 
 Every successful operation is logged locally on the resource daemon:
 
-```bash
-clawgate audit
-# [2026-02-01T10:23:45Z] READ /home/mario/projects/app/main.zig success=true
-# [2026-02-01T10:23:47Z] LIST /home/mario/projects/app/ success=true
+```
+info: AUDIT: req=req_1384782a2944c377 op=git path=/home/m64/space/ai/clawgate success=true
+info: AUDIT: req=req_79565e1ce32a2715 op=list path=/home/m64/space/ai/clawgate success=true
 ```
 
 Denied operations fail immediately on the agent daemon:
