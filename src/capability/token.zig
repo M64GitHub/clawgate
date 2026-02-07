@@ -189,7 +189,7 @@ pub const Token = struct {
     pub fn isExpired(self: *const Token) bool {
         const ts = std.posix.clock_gettime(.REALTIME) catch return true;
         const now: i64 = @intCast(ts.sec);
-        return now > self.payload.exp;
+        return now >= self.payload.exp;
     }
 
     /// Checks if token allows an operation on a path.

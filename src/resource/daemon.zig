@@ -29,6 +29,10 @@ pub const Config = struct {
     connect_port: u16 = tcp.DEFAULT_PORT,
     public_key_path: []const u8,
     resource_id: []const u8 = "clawgate-resource",
+    /// Expected token issuer (if set, tokens with different iss are rejected).
+    expected_issuer: ?[]const u8 = null,
+    /// Expected token subject (if set, tokens with different sub are rejected).
+    expected_subject: ?[]const u8 = null,
     environ: std.process.Environ = .empty,
 };
 
@@ -191,7 +195,7 @@ fn connectAndServe(
 
     std.log.info("E2E session established: {s}", .{session_id});
 
-    mainLoop(allocator, io, &enc_conn, public_key);
+    mainLoop(allocator, io, &enc_conn, public_key, config);
 }
 
 /// Main request processing loop. Runs until connection closes.
@@ -200,6 +204,7 @@ fn mainLoop(
     io: Io,
     enc_conn: *handshake.EncryptedConnection,
     public_key: crypto.PublicKey,
+    config: Config,
 ) void {
     while (true) {
         const request_json = enc_conn.recvEncrypted(allocator) catch |err| {
@@ -215,6 +220,10 @@ fn mainLoop(
             io,
             request_json,
             public_key,
+            .{
+                .expected_issuer = config.expected_issuer,
+                .expected_subject = config.expected_subject,
+            },
         ) catch |err| {
             std.log.err("Handler error: {}", .{err});
             sendErrorResponse(allocator, enc_conn);

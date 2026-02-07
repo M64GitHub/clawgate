@@ -78,12 +78,18 @@ pub const ResourceConfig = struct {
     max_file_size: usize = 100 * 1024 * 1024,
     /// Truncate files larger than this (bytes).
     truncate_at: usize = 512 * 1024,
+    /// Expected token issuer (validates iss claim).
+    expected_issuer: ?[]const u8 = null,
+    /// Expected token subject (validates sub claim).
+    expected_subject: ?[]const u8 = null,
 
     pub fn deinit(self: *ResourceConfig, allocator: Allocator) void {
         for (self.forbidden_paths) |p| {
             allocator.free(p);
         }
         allocator.free(self.forbidden_paths);
+        if (self.expected_issuer) |v| allocator.free(v);
+        if (self.expected_subject) |v| allocator.free(v);
     }
 };
 
@@ -381,6 +387,18 @@ fn applyResourceConfig(
             kv.value,
             10,
         ) catch config.truncate_at;
+    } else if (std.mem.eql(u8, kv.key, "expected_issuer")) {
+        if (config.expected_issuer) |v| allocator.free(v);
+        config.expected_issuer = allocator.dupe(
+            u8,
+            kv.value,
+        ) catch return ConfigError.OutOfMemory;
+    } else if (std.mem.eql(u8, kv.key, "expected_subject")) {
+        if (config.expected_subject) |v| allocator.free(v);
+        config.expected_subject = allocator.dupe(
+            u8,
+            kv.value,
+        ) catch return ConfigError.OutOfMemory;
     }
 }
 

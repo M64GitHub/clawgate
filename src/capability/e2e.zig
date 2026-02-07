@@ -16,6 +16,7 @@ pub const E2eError = error{
     InvalidPublicKey,
     DecryptionFailed,
     MessageTooShort,
+    NonceExhausted,
     OutOfMemory,
 };
 
@@ -97,7 +98,11 @@ pub const Session = struct {
         errdefer allocator.free(output);
 
         const nonce = self.generateNonce();
-        self.nonce_counter += 1;
+        self.nonce_counter = std.math.add(
+            u64,
+            self.nonce_counter,
+            1,
+        ) catch return E2eError.NonceExhausted;
 
         @memcpy(output[0..NONCE_LENGTH], &nonce);
 
@@ -629,4 +634,38 @@ test "replay attack across sessions fails" {
     // Replay attack: trying to decrypt old message with new session
     const replay_result = bob_session2.decrypt(allocator, encrypted);
     try std.testing.expectError(E2eError.DecryptionFailed, replay_result);
+}
+
+test "nonce counter overflow returns NonceExhausted" {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const allocator = std.testing.allocator;
+
+    const alice = KeyPair.generate(io);
+    const bob = KeyPair.generate(io);
+
+    var session = try Session.establish(
+        allocator,
+        alice.secret_key,
+        bob.public_key,
+        "overflow_test",
+    );
+    defer session.deinit(allocator);
+
+    // Set counter to max - 1; next encrypt brings it to max
+    session.nonce_counter = std.math.maxInt(u64) - 1;
+
+    const enc1 = try session.encrypt(allocator, "ok");
+    allocator.free(enc1);
+    try std.testing.expectEqual(
+        std.math.maxInt(u64),
+        session.nonce_counter,
+    );
+
+    // Next encrypt must fail: counter would overflow
+    const result = session.encrypt(allocator, "fail");
+    try std.testing.expectError(
+        E2eError.NonceExhausted,
+        result,
+    );
 }

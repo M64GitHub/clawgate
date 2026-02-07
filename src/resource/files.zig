@@ -128,35 +128,56 @@ pub fn writeFile(
 ) FileError!usize {
     switch (mode) {
         .create, .overwrite => {
-            // Security: For create/overwrite we must handle symlinks carefully.
-            // We use a two-phase approach to avoid TOCTOU:
-            // 1. Try to unlink existing symlink (fails safely if not symlink)
-            // 2. Create the file with O_EXCL semantics where possible
-            //
-            // If path exists and is a symlink, we reject it.
-            // We check AFTER any file operation to avoid race conditions.
-
-            const file = Dir.createFile(.cwd(), io, path, .{
-                .truncate = true,
-            }) catch |err| {
-                return switch (err) {
-                    error.AccessDenied => FileError.AccessDenied,
-                    error.IsDir => FileError.NotAFile,
-                    else => FileError.IoError,
-                };
+            // Security: Two-phase approach to prevent symlink attacks.
+            // Phase 1: Try openFile with follow_symlinks=false.
+            //   - If file exists and is regular: truncate+write
+            //   - If symlink: SymLinkLoop error -> reject
+            // Phase 2: If FileNotFound, createFile with
+            //   exclusive=true (O_EXCL) to atomically ensure no
+            //   symlink was raced into place (TOCTOU defense).
+            const file = Dir.openFile(
+                .cwd(),
+                io,
+                path,
+                .{
+                    .mode = .read_write,
+                    .follow_symlinks = FOLLOW_SYMLINKS,
+                },
+            ) catch |err| switch (err) {
+                error.FileNotFound => {
+                    const new = Dir.createFile(
+                        .cwd(),
+                        io,
+                        path,
+                        .{
+                            .truncate = true,
+                            .exclusive = true,
+                        },
+                    ) catch |e| {
+                        return switch (e) {
+                            error.PathAlreadyExists =>
+                                FileError.IsSymlink,
+                            error.AccessDenied =>
+                                FileError.AccessDenied,
+                            error.IsDir => FileError.NotAFile,
+                            else => FileError.IoError,
+                        };
+                    };
+                    defer new.close(io);
+                    new.writeStreamingAll(io, content) catch {
+                        return FileError.IoError;
+                    };
+                    return content.len;
+                },
+                error.AccessDenied => return FileError.AccessDenied,
+                error.IsDir => return FileError.NotAFile,
+                error.SymLinkLoop => return FileError.IsSymlink,
+                else => return FileError.IoError,
             };
             defer file.close(io);
 
-            // Security: Verify the opened file is not a symlink (TOCTOU-safe)
-            // We check the file descriptor we actually opened, not the path.
-            if (!FOLLOW_SYMLINKS) {
-                const stat = file.stat(io) catch return FileError.IoError;
-                if (stat.kind == .sym_link) {
-                    // We opened a symlink - reject and don't write
-                    return FileError.IsSymlink;
-                }
-            }
-
+            // Truncate existing file and write
+            file.setLength(io, 0) catch return FileError.IoError;
             file.writeStreamingAll(io, content) catch {
                 return FileError.IoError;
             };
@@ -806,6 +827,63 @@ test "write file - symlink rejected in append mode" {
     }
 }
 
+test "write file - symlink rejected in create mode" {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const target_path = "/tmp/clawgate_symlink_create_target.txt";
+    const link_path = "/tmp/clawgate_symlink_create_test.txt";
+
+    // Create target file
+    {
+        const file = Dir.createFile(
+            .cwd(),
+            io,
+            target_path,
+            .{},
+        ) catch return;
+        defer file.close(io);
+        file.writeStreamingAll(io, "original") catch return;
+    }
+    defer Dir.deleteFile(.cwd(), io, target_path) catch {};
+
+    // Create symlink
+    Dir.symLinkAbsolute(
+        io,
+        target_path,
+        link_path,
+        .{},
+    ) catch return;
+    defer Dir.deleteFile(.cwd(), io, link_path) catch {};
+
+    // Create/overwrite via symlink must fail
+    const result = writeFile(io, link_path, "evil", .create);
+    if (FOLLOW_SYMLINKS) {
+        if (result) |_| {} else |_| {}
+    } else {
+        try std.testing.expectError(
+            FileError.IsSymlink,
+            result,
+        );
+    }
+
+    // Overwrite mode via symlink must also fail
+    const result2 = writeFile(
+        io,
+        link_path,
+        "evil",
+        .overwrite,
+    );
+    if (FOLLOW_SYMLINKS) {
+        if (result2) |_| {} else |_| {}
+    } else {
+        try std.testing.expectError(
+            FileError.IsSymlink,
+            result2,
+        );
+    }
+}
+
 test "stat file - symlink rejected" {
     const allocator = std.testing.allocator;
     var threaded: std.Io.Threaded = .init(allocator, .{ .environ = .empty });
@@ -870,4 +948,113 @@ test "list directory - symlink directory rejected" {
             try std.testing.expect(is_rejected);
         }
     }
+}
+
+test "write file - create then read back content" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const path = "/tmp/clawgate_readback_create.txt";
+    defer Dir.deleteFile(.cwd(), io, path) catch {};
+
+    const content = "hello world 12345";
+    const n = try writeFile(io, path, content, .create);
+    try std.testing.expectEqual(content.len, n);
+
+    var result = try readFile(
+        allocator,
+        io,
+        path,
+        0,
+        null,
+    );
+    defer freeReadResult(allocator, &result);
+    try std.testing.expectEqualStrings(
+        content,
+        result.content,
+    );
+}
+
+test "write file - overwrite replaces content" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const path = "/tmp/clawgate_readback_overwrite.txt";
+    defer Dir.deleteFile(.cwd(), io, path) catch {};
+
+    _ = try writeFile(
+        io,
+        path,
+        "original content",
+        .create,
+    );
+    _ = try writeFile(io, path, "new", .overwrite);
+
+    var result = try readFile(
+        allocator,
+        io,
+        path,
+        0,
+        null,
+    );
+    defer freeReadResult(allocator, &result);
+    try std.testing.expectEqualStrings("new", result.content);
+}
+
+test "write file - append adds to existing content" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const path = "/tmp/clawgate_readback_append.txt";
+    defer Dir.deleteFile(.cwd(), io, path) catch {};
+
+    _ = try writeFile(io, path, "hello", .create);
+    _ = try writeFile(io, path, " world", .append);
+
+    var result = try readFile(
+        allocator,
+        io,
+        path,
+        0,
+        null,
+    );
+    defer freeReadResult(allocator, &result);
+    try std.testing.expectEqualStrings(
+        "hello world",
+        result.content,
+    );
+}
+
+test "write file - overwrite shorter content truncates" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const path = "/tmp/clawgate_readback_trunc.txt";
+    defer Dir.deleteFile(.cwd(), io, path) catch {};
+
+    _ = try writeFile(
+        io,
+        path,
+        "this is a long original string",
+        .create,
+    );
+    _ = try writeFile(io, path, "short", .overwrite);
+
+    var result = try readFile(
+        allocator,
+        io,
+        path,
+        0,
+        null,
+    );
+    defer freeReadResult(allocator, &result);
+    // Must be exactly "short", not "shortis a long..."
+    try std.testing.expectEqualStrings(
+        "short",
+        result.content,
+    );
 }

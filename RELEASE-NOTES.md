@@ -1,4 +1,10 @@
-# ClawGate v0.2.0 Release Notes
+# ClawGate v0.2.1 Release Notes
+
+This release hardens security across the board: component-aware
+forbidden path matching (no more substring false positives),
+git config key whitelisting, identity validation for tokens,
+improved symlink protection with TOCTOU-safe two-phase writes,
+and robust output truncation for large git diffs.
 
 ## Git Operations
 

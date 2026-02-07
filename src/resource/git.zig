@@ -8,9 +8,15 @@ const std = @import("std");
 const protocol = @import("../protocol/json.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const Dir = std.Io.Dir;
 
 /// Maximum output bytes per stream before truncation.
 pub const TRUNCATE_AT: usize = 512 * 1024;
+
+/// Collection limit: collect more than TRUNCATE_AT so we can
+/// detect and handle truncation ourselves rather than losing
+/// all data when process.run throws OutputTooLong.
+const COLLECT_LIMIT: usize = TRUNCATE_AT * 2;
 
 /// Default timeout for git commands (30 seconds).
 pub const DEFAULT_TIMEOUT_MS: u32 = 30_000;
@@ -89,6 +95,58 @@ const BLOCKED_SUB_ARGS = [_]BlockedSubArg{
     .{ .subcmd = "config", .flag = "--system" },
 };
 
+/// Safe git config key prefixes for read-only access.
+/// Keys not matching these are blocked to prevent leaking
+/// credentials, tokens, and other sensitive config values.
+const SAFE_CONFIG_PREFIXES = [_][]const u8{
+    "user.",
+    "branch.",
+    "core.",
+    "remote.",
+    "merge.",
+    "diff.",
+    "log.",
+    "color.",
+    "push.default",
+    "pull.rebase",
+    "init.defaultBranch",
+    "status.",
+    "advice.",
+};
+
+/// Checks if a git config --get/--get-all key is whitelisted.
+/// Scans args for the first non-flag argument after --get/--get-all
+/// and validates it against SAFE_CONFIG_PREFIXES.
+fn isConfigKeyAllowed(args: []const []const u8) bool {
+    var found_get = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--get") or
+            std.mem.eql(u8, arg, "--get-all") or
+            std.mem.eql(u8, arg, "--get-regexp") or
+            std.mem.eql(u8, arg, "--get-urlmatch"))
+        {
+            found_get = true;
+            continue;
+        }
+        // Skip flags
+        if (std.mem.startsWith(u8, arg, "-")) continue;
+        // This is the config key argument
+        if (found_get) {
+            for (SAFE_CONFIG_PREFIXES) |prefix| {
+                // Git config keys are case-insensitive
+                if (std.ascii.startsWithIgnoreCase(
+                    arg,
+                    prefix,
+                ))
+                    return true;
+            }
+            return false;
+        }
+    }
+    // No key argument found after --get
+    return false;
+}
+
 /// Read-only subcommands needing special argument checks.
 /// "stash" is read-only only for "list"; other stash
 /// subcommands are write tier.
@@ -113,9 +171,14 @@ pub fn classifySubcommand(args: []const []const u8) Tier {
 
     // "stash" tier depends on sub-subcommand
     if (std.mem.eql(u8, subcmd, "stash")) {
-        if (args.len < 2) return .read; // bare "stash" = status
+        // bare "git stash" == "git stash push" (write op)
+        if (args.len < 2) return .write;
         const sub = args[1];
-        if (std.mem.eql(u8, sub, "list")) return .read;
+        if (std.mem.eql(u8, sub, "list") or
+            std.mem.eql(u8, sub, "show"))
+        {
+            return .read;
+        }
         return .write;
     }
 
@@ -131,15 +194,25 @@ pub fn classifySubcommand(args: []const []const u8) Tier {
         return .remote;
     }
 
-    // "config" tier depends on flags
+    // "config" tier depends on flags.
+    // --list/-l blocked (dumps all config including secrets).
+    // --get/--get-all only allowed for whitelisted key prefixes.
     if (std.mem.eql(u8, subcmd, "config")) {
         for (args[1..]) |arg| {
-            if (std.mem.eql(u8, arg, "--get") or
-                std.mem.eql(u8, arg, "--get-all") or
-                std.mem.eql(u8, arg, "--list") or
+            // Block --list/-l: exposes all config values
+            if (std.mem.eql(u8, arg, "--list") or
                 std.mem.eql(u8, arg, "-l"))
             {
-                return .read;
+                return .blocked;
+            }
+            if (std.mem.eql(u8, arg, "--get") or
+                std.mem.eql(u8, arg, "--get-all") or
+                std.mem.eql(u8, arg, "--get-regexp") or
+                std.mem.eql(u8, arg, "--get-urlmatch"))
+            {
+                if (isConfigKeyAllowed(args[1..]))
+                    return .read;
+                return .blocked;
             }
         }
         return .write;
@@ -248,6 +321,7 @@ pub fn validateArgs(args: []const []const u8) GitError!void {
 
 /// Executes a git command in the specified directory.
 /// Returns a GitResult with stdout, stderr, exit code.
+/// Output is truncated at TRUNCATE_AT with truncated flag set.
 /// Caller owns the returned stdout and stderr memory.
 pub fn executeGit(
     allocator: Allocator,
@@ -270,12 +344,15 @@ pub fn executeGit(
             return GitError.OutOfMemory;
     }
 
+    // Collect up to COLLECT_LIMIT (2x TRUNCATE_AT) so we can
+    // detect truncation and trim ourselves. OutputTooLong only
+    // fires for truly massive output (> COLLECT_LIMIT).
     const result = std.process.run(
         allocator,
         io,
         .{
             .argv = argv.items,
-            .max_output_bytes = TRUNCATE_AT,
+            .max_output_bytes = COLLECT_LIMIT,
         },
     ) catch |err| {
         return switch (err) {
@@ -286,10 +363,6 @@ pub fn executeGit(
             else => GitError.SpawnFailed,
         };
     };
-    errdefer {
-        allocator.free(result.stdout);
-        allocator.free(result.stderr);
-    }
 
     const exit_code: u8 = switch (result.term) {
         .exited => |code| code,
@@ -298,11 +371,42 @@ pub fn executeGit(
         .unknown => 128,
     };
 
+    // Trim output to TRUNCATE_AT if needed. We must allocate
+    // new buffers because allocator.free needs the original
+    // slice length.
+    var stdout = result.stdout;
+    var stderr = result.stderr;
+    var truncated = false;
+
+    if (stdout.len > TRUNCATE_AT) {
+        const trimmed = allocator.alloc(u8, TRUNCATE_AT) catch {
+            allocator.free(result.stdout);
+            allocator.free(result.stderr);
+            return GitError.OutOfMemory;
+        };
+        @memcpy(trimmed, result.stdout[0..TRUNCATE_AT]);
+        allocator.free(result.stdout);
+        stdout = trimmed;
+        truncated = true;
+    }
+
+    if (stderr.len > TRUNCATE_AT) {
+        const trimmed = allocator.alloc(u8, TRUNCATE_AT) catch {
+            allocator.free(stdout);
+            allocator.free(result.stderr);
+            return GitError.OutOfMemory;
+        };
+        @memcpy(trimmed, result.stderr[0..TRUNCATE_AT]);
+        allocator.free(result.stderr);
+        stderr = trimmed;
+        truncated = true;
+    }
+
     return protocol.GitResult{
-        .stdout = result.stdout,
-        .stderr = result.stderr,
+        .stdout = stdout,
+        .stderr = stderr,
         .exit_code = exit_code,
-        .truncated = false,
+        .truncated = truncated,
     };
 }
 
@@ -362,9 +466,9 @@ test "classifySubcommand - unknown command is blocked" {
 }
 
 test "classifySubcommand - stash subcommands" {
-    // bare stash = read
+    // bare stash = write (equivalent to "stash push")
     try std.testing.expectEqual(
-        Tier.read,
+        Tier.write,
         classifySubcommand(&[_][]const u8{"stash"}),
     );
     // stash list = read
@@ -379,6 +483,27 @@ test "classifySubcommand - stash subcommands" {
         Tier.write,
         classifySubcommand(
             &[_][]const u8{ "stash", "pop" },
+        ),
+    );
+    // stash show = read (only displays diff)
+    try std.testing.expectEqual(
+        Tier.read,
+        classifySubcommand(
+            &[_][]const u8{ "stash", "show" },
+        ),
+    );
+    // stash drop = write
+    try std.testing.expectEqual(
+        Tier.write,
+        classifySubcommand(
+            &[_][]const u8{ "stash", "drop" },
+        ),
+    );
+    // stash push = write
+    try std.testing.expectEqual(
+        Tier.write,
+        classifySubcommand(
+            &[_][]const u8{ "stash", "push" },
         ),
     );
 }
@@ -406,18 +531,54 @@ test "classifySubcommand - remote subcommands" {
 }
 
 test "classifySubcommand - config subcommands" {
-    // config --list = read
+    // config --list = blocked (dumps all config)
     try std.testing.expectEqual(
-        Tier.read,
+        Tier.blocked,
         classifySubcommand(
             &[_][]const u8{ "config", "--list" },
         ),
     );
-    // config --get = read
+    // config -l = blocked
+    try std.testing.expectEqual(
+        Tier.blocked,
+        classifySubcommand(
+            &[_][]const u8{ "config", "-l" },
+        ),
+    );
+    // config --get with safe key = read
     try std.testing.expectEqual(
         Tier.read,
         classifySubcommand(
             &[_][]const u8{ "config", "--get", "user.name" },
+        ),
+    );
+    // config --get with safe key = read
+    try std.testing.expectEqual(
+        Tier.read,
+        classifySubcommand(
+            &[_][]const u8{ "config", "--get", "core.autocrlf" },
+        ),
+    );
+    // config --get with sensitive key = blocked
+    try std.testing.expectEqual(
+        Tier.blocked,
+        classifySubcommand(
+            &[_][]const u8{
+                "config",
+                "--get",
+                "credential.helper",
+            },
+        ),
+    );
+    // config --get-all with sensitive key = blocked
+    try std.testing.expectEqual(
+        Tier.blocked,
+        classifySubcommand(
+            &[_][]const u8{
+                "config",
+                "--get-all",
+                "url.ssh://git@github.com/.insteadOf",
+            },
         ),
     );
     // config set = write
@@ -425,6 +586,53 @@ test "classifySubcommand - config subcommands" {
         Tier.write,
         classifySubcommand(
             &[_][]const u8{ "config", "user.name", "Mario" },
+        ),
+    );
+    // config --get without key = blocked
+    try std.testing.expectEqual(
+        Tier.blocked,
+        classifySubcommand(
+            &[_][]const u8{ "config", "--get" },
+        ),
+    );
+    // config --get with uppercase key = read (case-insensitive)
+    try std.testing.expectEqual(
+        Tier.read,
+        classifySubcommand(
+            &[_][]const u8{ "config", "--get", "User.Name" },
+        ),
+    );
+    // config --get-regexp with safe key = read
+    try std.testing.expectEqual(
+        Tier.read,
+        classifySubcommand(
+            &[_][]const u8{
+                "config",
+                "--get-regexp",
+                "user.*",
+            },
+        ),
+    );
+    // config --get-regexp with sensitive key = blocked
+    try std.testing.expectEqual(
+        Tier.blocked,
+        classifySubcommand(
+            &[_][]const u8{
+                "config",
+                "--get-regexp",
+                "credential.*",
+            },
+        ),
+    );
+    // config --get-urlmatch with safe key = read
+    try std.testing.expectEqual(
+        Tier.read,
+        classifySubcommand(
+            &[_][]const u8{
+                "config",
+                "--get-urlmatch",
+                "remote.origin",
+            },
         ),
     );
 }
@@ -585,5 +793,145 @@ test "requiredOp returns correct operation string" {
     try std.testing.expectEqualStrings(
         "git_remote",
         requiredOp(.remote),
+    );
+}
+
+test "executeGit - small output not truncated" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    // Create temp repo
+    const repo = "/tmp/clawgate_git_test_small";
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{ "rm", "-rf", repo },
+    }) catch return;
+    defer {
+        _ = std.process.run(allocator, io, .{
+            .argv = &.{ "rm", "-rf", repo },
+        }) catch {};
+    }
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{ "mkdir", "-p", repo },
+    }) catch return;
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "-C", repo, "init" },
+    }) catch return;
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{
+            "git", "-C", repo,
+            "commit", "--allow-empty", "-m", "init",
+        },
+    }) catch return;
+
+    var result = executeGit(
+        allocator,
+        io,
+        repo,
+        &.{ "log", "--oneline" },
+    ) catch return;
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    try std.testing.expect(!result.truncated);
+    try std.testing.expect(result.stdout.len > 0);
+    try std.testing.expect(result.exit_code == 0);
+}
+
+test "executeGit - large output truncated correctly" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    // Create temp repo with a large file
+    const repo = "/tmp/clawgate_git_test_large";
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{ "rm", "-rf", repo },
+    }) catch return;
+    defer {
+        _ = std.process.run(allocator, io, .{
+            .argv = &.{ "rm", "-rf", repo },
+        }) catch {};
+    }
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{ "mkdir", "-p", repo },
+    }) catch return;
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "-C", repo, "init" },
+    }) catch return;
+
+    // Create a large file (>TRUNCATE_AT bytes when diffed)
+    const file_path = repo ++ "/large.txt";
+    {
+        const file = Dir.createFile(
+            .cwd(),
+            io,
+            file_path,
+            .{},
+        ) catch return;
+        defer file.close(io);
+        // Write ~600KB of distinct lines so diff output is large
+        var i: usize = 0;
+        while (i < 20000) : (i += 1) {
+            // Each line ~30 bytes, 20000 lines = ~600KB
+            file.writeStreamingAll(
+                io,
+                "line-AAAA-original-content-XX\n",
+            ) catch return;
+        }
+    }
+
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{
+            "git", "-C", repo, "add", "large.txt",
+        },
+    }) catch return;
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{
+            "git", "-C", repo,
+            "commit", "-m", "add large file",
+        },
+    }) catch return;
+
+    // Modify the file so diff is large
+    {
+        const file = Dir.createFile(
+            .cwd(),
+            io,
+            file_path,
+            .{},
+        ) catch return;
+        defer file.close(io);
+        var i: usize = 0;
+        while (i < 20000) : (i += 1) {
+            file.writeStreamingAll(
+                io,
+                "line-BBBB-modified-content-YY\n",
+            ) catch return;
+        }
+    }
+
+    var result = executeGit(
+        allocator,
+        io,
+        repo,
+        &.{"diff"},
+    ) catch |err| {
+        // If git is not available, skip
+        if (err == GitError.SpawnFailed) return;
+        return;
+    };
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    try std.testing.expect(result.truncated);
+    try std.testing.expectEqual(TRUNCATE_AT, result.stdout.len);
+    // Output should start with valid diff header
+    try std.testing.expect(
+        std.mem.startsWith(u8, result.stdout, "diff --git"),
     );
 }

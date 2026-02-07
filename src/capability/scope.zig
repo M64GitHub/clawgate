@@ -73,6 +73,9 @@ pub fn canonicalizePath(
     // Must be absolute path
     if (path.len == 0 or path[0] != '/') return null;
 
+    // Reject null bytes (prevent C-string truncation attacks)
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return null;
+
     var components: std.ArrayListUnmanaged([]const u8) = .empty;
     defer components.deinit(allocator);
 
@@ -429,15 +432,25 @@ test "canonicalizePath rejects percent-encoded traversal" {
         try std.testing.expect(std.mem.indexOf(u8, path, "..") == null);
         allocator.free(path);
     }
+}
 
-    // Null byte injection attempt (literal string)
-    const p2 = canonicalizePath(allocator, "/home/user/\x00/../passwd");
-    // Should either be null or not contain traversal
-    if (p2) |path| {
-        defer allocator.free(path);
-        try std.testing.expect(std.mem.indexOf(u8, path, "passwd") == null or
-            std.mem.indexOf(u8, path, "..") == null);
-    }
+test "canonicalizePath rejects null bytes" {
+    const allocator = std.testing.allocator;
+
+    // Null byte at various positions must be rejected
+    try std.testing.expect(
+        canonicalizePath(allocator, "/home/user/\x00/../passwd") == null,
+    );
+    try std.testing.expect(
+        canonicalizePath(allocator, "/home/\x00evil") == null,
+    );
+    try std.testing.expect(
+        canonicalizePath(allocator, "/allowed/x\x00ignored") == null,
+    );
+    // Null byte at end
+    try std.testing.expect(
+        canonicalizePath(allocator, "/home/user/file\x00") == null,
+    );
 }
 
 test "matches rejects path component boundary attacks" {
