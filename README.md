@@ -104,6 +104,7 @@ clawgate --mode resource --connect <agent-ip>:4223
 ClawGate was built for [OpenClaw](https://github.com/openclaw/openclaw).  
 
 Add the skill file: copy `skills/clawgate/SKILL.md` to your workspace.  
+Or let the agent do it. Paste it in Telegram / Whatsapp.  
 **Done**.  
 
 ```bash
