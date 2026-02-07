@@ -320,39 +320,6 @@ https://clawgate.io
 > `--stat`, `-k/--key`, `--issuer`, and `--subject`.
 
 
-## Configuration
-
-ClawGate uses `~/.clawgate/config.toml`:
-
-```toml
-[tcp]
-# Agent daemon settings
-listen_addr = "0.0.0.0"
-listen_port = 4223
-
-# Resource daemon settings
-connect_addr = "agent.example.com"
-connect_port = 4223
-
-[keys]
-private_key = "~/.clawgate/keys/secret.key"
-public_key = "~/.clawgate/keys/public.key"
-
-[resource]
-# Additional forbidden paths (beyond hardcoded ones)
-forbidden_paths = [
-  "~/.config/secrets/**",
-  "~/private/**"
-]
-
-# File size limits
-max_file_size = 104857600  # 100MB
-truncate_at = 524288       # 512KB
-
-[agent]
-token_dir = "~/.clawgate/tokens"
-```
-
 ## Architecture
 
 ClawGate is split into two cooperating sides: the **resource side** (your laptop) and the **agent side** (the isolated machine).

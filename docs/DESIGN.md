@@ -928,60 +928,6 @@ capabilities via JSON-RPC 2.0 over stdio.
 {"jsonrpc": "2.0", "id": 4, "result": {"content": "M src/main.zig\n"}}
 ```
 
-## Configuration
-
-### Config File Location
-
-```
-~/.clawgate/config.toml
-```
-
-If the file doesn't exist, defaults are used.
-
-### Configuration Sections
-
-```toml
-# TCP connection settings
-[tcp]
-listen_addr = "0.0.0.0"      # Agent daemon listen address
-listen_port = 4223           # Agent daemon listen port
-connect_addr = "localhost"   # Resource daemon connect target
-connect_port = 4223          # Resource daemon connect port
-
-# Ed25519 key paths
-[keys]
-private_key = "~/.clawgate/keys/secret.key"
-public_key = "~/.clawgate/keys/public.key"
-
-# Agent daemon settings
-[agent]
-token_dir = "~/.clawgate/tokens"
-
-# Resource daemon settings
-[resource]
-max_file_size = 104857600    # 100 MB
-truncate_at = 524288         # 512 KB
-# Additional forbidden paths (hardcoded ones always apply)
-forbidden_path = "~/private/**"
-forbidden_path = "/etc/shadow"
-```
-
-### Default Values
-
-| Setting | Default |
-|---------|---------|
-| tcp.listen_addr | `0.0.0.0` |
-| tcp.listen_port | `4223` |
-| tcp.connect_addr | (none) |
-| tcp.connect_port | `4223` |
-| keys.private_key | `~/.clawgate/keys/secret.key` |
-| keys.public_key | `~/.clawgate/keys/public.key` |
-| agent.token_dir | `~/.clawgate/tokens` |
-| resource.max_file_size | 100 MB |
-| resource.truncate_at | 512 KB |
-
-Path values support `~` expansion to home directory.
-
 ## Deployment Scenarios
 
 ### Scenario 1: Private LAN (Mac Mini + MacBook)
@@ -1293,8 +1239,8 @@ AUDIT: req=req_12345 op=read path=/home/mario/file.txt success=true
 
 | Limit | Value | Configurable |
 |-------|-------|--------------|
-| Maximum file size | 100 MB | Yes |
-| Truncation threshold | 512 KB | Yes |
+| Maximum file size | 100 MB | No |
+| Truncation threshold | 512 KB | No |
 | Maximum token payload | 16 KB | No |
 
 ### Network
