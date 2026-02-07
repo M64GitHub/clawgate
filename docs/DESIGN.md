@@ -717,10 +717,17 @@ Each tier implies the previous: `git_remote` > `git_write` > `git`.
 ### Grant CLI Flags
 
 ```bash
-clawgate grant --git ~/projects/**       # git (read-only) + file read/list/stat
-clawgate grant --git-write ~/projects/** # + git_write + file write
-clawgate grant --git-full ~/projects/**  # + git_remote
+clawgate grant --git ~/projects/myapp        # git only (exact repo path)
+clawgate grant --git ~/projects/**           # git + file read/list/stat (recursive)
+clawgate grant --git-write ~/projects/**     # + git_write + file write
+clawgate grant --git-full ~/projects/**      # + git_remote
 ```
+
+**Scope behavior:** Git operations validate the repository root path against
+the token scope. An exact path grant (no glob) is sufficient for git commands
+alone. However, `--git` also enables file read/list/stat operations, which
+validate individual file paths - these require a `/**` glob to access files
+within the repository.
 
 ### Request Format
 

@@ -206,6 +206,13 @@ clawgate git ~/projects/myapp log --oneline -20
 clawgate git ~/projects/myapp diff HEAD~3
 ```
 
+> **Scope tip:** For git-only workflows, granting the exact repo path is
+> sufficient: `clawgate grant --git ~/projects/myapp`. Git commands only
+> check the repository root path. However, `--git` also enables file
+> read/list/stat, and those check individual file paths - so use
+> `~/projects/myapp/**` if you also want to read files inside the repo
+> with `clawgate cat` or `clawgate ls`.
+
 **Security:** Git commands run through allowlists with blocked flags (`-c`, `--exec-path`, `--git-dir`, `--work-tree`) to prevent scope escapes and arbitrary code execution. See the [Design Document](docs/DESIGN.md) for the full allowlist specification.
 
 ## Features

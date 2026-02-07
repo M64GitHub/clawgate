@@ -239,7 +239,10 @@ clawgate grant --write "/tmp/output/**" --ttl 24h
 # Both
 clawgate grant --read --write "/path/to/project/**" --ttl 24h
 
-# Git read-only (includes file read/list/stat)
+# Git only (no file read inside repo)
+clawgate grant --git /path/to/repo --ttl 24h
+
+# Git + file read inside repo (most useful)
 clawgate grant --git "/path/to/repo/**" --ttl 24h
 
 # Git read+write (includes file read+write)
@@ -248,6 +251,8 @@ clawgate grant --git-write "/path/to/repo/**" --ttl 8h
 # Git full access (includes push/pull/fetch)
 clawgate grant --git-full "/path/to/repo/**" --ttl 4h
 ```
+
+**Scope note:** Git commands only check the repo root path, so an exact path grant (`/path/to/repo`) is enough for git. But `--git` also enables file read/list/stat - to use `clawgate cat` or `clawgate ls` on files inside the repo, you need the `/**` glob.
 
 **Hot reload:** Tokens can be added while running - no restart needed!
 
