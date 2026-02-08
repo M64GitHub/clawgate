@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 CG="$PROJECT_DIR/zig-out/bin/clawgate"
 
-TEST_PORT="${CLAWGATE_TEST_PORT:-14223}"
+TEST_PORT="${CLAWGATE_TEST_PORT:-63280}"
 TEST_HOME="/tmp/clawgate_test_$$"
 TEST_DIR="/tmp/clawgate_testdata_$$"
 

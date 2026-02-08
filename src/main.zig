@@ -202,7 +202,7 @@ fn handleModeCommand(
     if (std.mem.eql(u8, mode, "resource")) {
         var public_key_path: []const u8 = "~/.clawgate/keys/public.key";
         var connect_addr: []const u8 = "localhost";
-        var connect_port: u16 = 4223;
+        var connect_port: u16 = 53280;
         var resource_id: []const u8 = "clawgate-resource";
 
         var i: usize = 0;
@@ -221,7 +221,7 @@ fn handleModeCommand(
                         u16,
                         addr_port[idx + 1 ..],
                         10,
-                    ) catch 4223;
+                    ) catch 53280;
                 } else {
                     connect_addr = addr_port;
                 }
@@ -244,7 +244,7 @@ fn handleModeCommand(
     } else if (std.mem.eql(u8, mode, "agent")) {
         var token_dir: []const u8 = "~/.clawgate/tokens";
         var listen_addr: []const u8 = "0.0.0.0";
-        var listen_port: u16 = 4223;
+        var listen_port: u16 = 53280;
 
         var i: usize = 0;
         while (i < remaining_args.len) : (i += 1) {
@@ -262,7 +262,7 @@ fn handleModeCommand(
                         u16,
                         addr_port[idx + 1 ..],
                         10,
-                    ) catch 4223;
+                    ) catch 53280;
                 }
             }
         }
@@ -357,7 +357,7 @@ fn printUsage() void {
         \\  clawgate audit --json             Output as JSON
         \\
         \\Daemon Options:
-        \\  --listen <addr:port>              Listen address (agent mode, default 0.0.0.0:4223)
+        \\  --listen <addr:port>              Listen address (agent mode, default 0.0.0.0:53280)
         \\  --connect <host:port>             Connect address (resource mode)
         \\  --public-key <path>               Public key path (resource mode)
         \\  --token-dir <path>                Token directory (agent mode)

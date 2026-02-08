@@ -45,11 +45,11 @@ pub const TcpConfig = struct {
     /// Listen address for agent daemon.
     listen_addr: []const u8,
     /// Listen port for agent daemon.
-    listen_port: u16 = 4223,
+    listen_port: u16 = 53280,
     /// Connect address for resource daemon (optional).
     connect_addr: ?[]const u8 = null,
     /// Connect port for resource daemon.
-    connect_port: u16 = 4223,
+    connect_port: u16 = 53280,
 
     pub fn deinit(self: *TcpConfig, allocator: Allocator) void {
         allocator.free(self.listen_addr);
@@ -272,9 +272,9 @@ pub fn defaults(allocator: Allocator, home: []const u8) !Config {
     return Config{
         .tcp = .{
             .listen_addr = listen_addr,
-            .listen_port = 4223,
+            .listen_port = 53280,
             .connect_addr = null,
-            .connect_port = 4223,
+            .connect_port = 53280,
         },
         .keys = .{
             .private_key = private_key,
@@ -336,12 +336,12 @@ fn applyTcpConfig(
         allocator.free(config.listen_addr);
         config.listen_addr = try expandAndDupe(allocator, kv.value, home);
     } else if (std.mem.eql(u8, kv.key, "listen_port")) {
-        config.listen_port = std.fmt.parseInt(u16, kv.value, 10) catch 4223;
+        config.listen_port = std.fmt.parseInt(u16, kv.value, 10) catch 53280;
     } else if (std.mem.eql(u8, kv.key, "connect_addr")) {
         if (config.connect_addr) |a| allocator.free(a);
         config.connect_addr = try expandAndDupe(allocator, kv.value, home);
     } else if (std.mem.eql(u8, kv.key, "connect_port")) {
-        config.connect_port = std.fmt.parseInt(u16, kv.value, 10) catch 4223;
+        config.connect_port = std.fmt.parseInt(u16, kv.value, 10) catch 53280;
     }
 }
 
@@ -498,7 +498,7 @@ test "defaults creates valid config" {
         "0.0.0.0",
         config.tcp.listen_addr,
     );
-    try std.testing.expectEqual(@as(u16, 4223), config.tcp.listen_port);
+    try std.testing.expectEqual(@as(u16, 53280), config.tcp.listen_port);
     try std.testing.expectEqualStrings(
         "/home/test/.clawgate/keys/secret.key",
         config.keys.private_key,
@@ -523,7 +523,7 @@ test "parse simple config" {
         \\listen_addr = "127.0.0.1"
         \\listen_port = 5000
         \\connect_addr = "remote.example.com"
-        \\connect_port = 4223
+        \\connect_port = 53280
         \\
         \\[keys]
         \\private_key = "~/.clawgate/custom/secret.key"
@@ -549,7 +549,7 @@ test "parse simple config" {
         "remote.example.com",
         config.tcp.connect_addr.?,
     );
-    try std.testing.expectEqual(@as(u16, 4223), config.tcp.connect_port);
+    try std.testing.expectEqual(@as(u16, 53280), config.tcp.connect_port);
     try std.testing.expectEqualStrings(
         "/home/user/.clawgate/custom/secret.key",
         config.keys.private_key,
@@ -765,7 +765,7 @@ test "parse tcp config fields" {
         \\listen_addr = "192.168.1.100"
         \\listen_port = 8080
         \\connect_addr = "agent.example.com"
-        \\connect_port = 4223
+        \\connect_port = 53280
     ;
 
     var config = try parse(allocator, content, "/home/user");
@@ -781,7 +781,7 @@ test "parse tcp config fields" {
         "agent.example.com",
         config.tcp.connect_addr.?,
     );
-    try std.testing.expectEqual(@as(u16, 4223), config.tcp.connect_port);
+    try std.testing.expectEqual(@as(u16, 53280), config.tcp.connect_port);
 }
 
 // Important: Empty and minimal configs

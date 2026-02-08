@@ -13,7 +13,7 @@ const Allocator = std.mem.Allocator;
 pub const MAX_MESSAGE_SIZE: usize = 100 * 1024 * 1024;
 
 /// Default ClawGate TCP port.
-pub const DEFAULT_PORT: u16 = 4223;
+pub const DEFAULT_PORT: u16 = 53280;
 
 /// Length prefix size (4 bytes, big-endian).
 const LENGTH_PREFIX_SIZE: usize = 4;
@@ -537,6 +537,6 @@ test "connect to invalid address fails" {
     const io = threaded.io();
 
     // Invalid address format
-    const result = connectTo(io, "not-an-ip", 4223);
+    const result = connectTo(io, "not-an-ip", 53280);
     try std.testing.expectError(TcpError.AddressParseError, result);
 }

@@ -57,7 +57,7 @@ ClawGate consists of four main components:
 |                         |                    |                         |
 |  +------------------+   |    E2E Encrypted   |   +------------------+  |
 |  | Resource Daemon  |<--|-------- TCP -------|-->| Agent Daemon     |  |
-|  |------------------|   |     Port 4223      |   |------------------|  |
+|  |------------------|   |     Port 53280     |   |------------------|  |
 |  | - Token verify   |   |                    |   | - Token store    |  |
 |  | - File ops       |   |                    |   | - IPC server     |  |
 |  | - Audit logging  |   |                    |   +--------^---------+  |
@@ -114,7 +114,7 @@ File System
 |                         |                    |                         |
 |  +------------------+   |    E2E Encrypted   |   +------------------+  |
 |  | Resource Daemon  |<--|-------- TCP -------|-->| Agent Daemon     |  |
-|  |------------------|   |     Port 4223      |   |------------------|  |
+|  |------------------|   |     Port 53280     |   |------------------|  |
 |  | - Token verify   |   |                    |   | - Token store    |  |
 |  | - File ops       |   |                    |   | - IPC server     |  |
 |  | - Audit logging  |   |                    |   +--------^---------+  |
@@ -170,7 +170,7 @@ The connection model is designed for security:
    outbound. No inbound connections to your laptop are required.
 
 2. **Agent daemon listens** - The isolated machine accepts connections on
-   port 4223 (configurable).
+   port 53280 (configurable).
 
 3. **Single active connection** - One resource daemon connects to one agent
    daemon at a time.
@@ -513,7 +513,7 @@ Receive Request with Token
 
 | Parameter | Value |
 |-----------|-------|
-| Default Port | 4223 |
+| Default Port | 53280 |
 | Length Prefix | 4 bytes, big-endian |
 | Max Message Size | 100 MB |
 
@@ -951,7 +951,7 @@ MacBook over the local network.
 |  192.168.1.10    |         |  192.168.1.100   |
 |------------------|         |------------------|
 |  Resource Daemon |-------->|  Agent Daemon    |
-|  (connects out)  |  :4223  |  (listens)       |
+|  (connects out)  | :53280  |  (listens)       |
 |                  |         |  MCP Server      |
 +------------------+         +--------+---------+
                                       |
@@ -992,12 +992,12 @@ MacBook over the local network.
 
 6. **Start agent daemon** (Mac Mini):
    ```bash
-   clawgate --mode agent --listen 0.0.0.0:4223
+   clawgate --mode agent --listen 0.0.0.0:53280
    ```
 
 7. **Start resource daemon** (MacBook):
    ```bash
-   clawgate --mode resource --connect 192.168.1.100:4223
+   clawgate --mode resource --connect 192.168.1.100:53280
    ```
 
 8. **Test access** (Mac Mini):
@@ -1007,7 +1007,7 @@ MacBook over the local network.
 
 **Security Notes:**
 - Both machines should be on a trusted network segment
-- Consider firewall rules to restrict port 4223 access
+- Consider firewall rules to restrict port 53280 access
 - Use short TTL tokens (1-24 hours) for regular work
 
 ### Scenario 2: VPS with SSH Tunnel
@@ -1021,8 +1021,8 @@ Running Claude Code on a VPS while accessing local files through an SSH tunnel.
 |  (behind NAT)    |                      |  (public IP)     |
 |------------------|     SSH Tunnel       |------------------|
 |  Resource Daemon |=====================>|  Agent Daemon    |
-|  connects to     |  localhost:4223      |  listens :4223   |
-|  localhost:4223  |                      |  MCP Server      |
+|  connects to     |  localhost:53280     |  listens :53280  |
+|  localhost:53280 |                      |  MCP Server      |
 +------------------+                      +--------+---------+
                                                    |
                                                    v
@@ -1035,9 +1035,9 @@ Running Claude Code on a VPS while accessing local files through an SSH tunnel.
 
 1. **Establish SSH tunnel** (local laptop):
    ```bash
-   ssh -R 4223:localhost:4223 user@vps.example.com
+   ssh -R 53280:localhost:53280 user@vps.example.com
    ```
-   This forwards VPS port 4223 to your local machine.
+   This forwards VPS port 53280 to your local machine.
 
 2. **Generate keys and grant access** (local laptop):
    ```bash
@@ -1064,13 +1064,13 @@ Running Claude Code on a VPS while accessing local files through an SSH tunnel.
 
 6. **Start agent daemon** (VPS):
    ```bash
-   clawgate --mode agent --listen 127.0.0.1:4223
+   clawgate --mode agent --listen 127.0.0.1:53280
    ```
    Note: Listen only on localhost for security.
 
 7. **Start resource daemon** (local laptop):
    ```bash
-   clawgate --mode resource --connect localhost:4223
+   clawgate --mode resource --connect localhost:53280
    ```
    Connection goes through the SSH tunnel.
 
@@ -1079,7 +1079,7 @@ Running Claude Code on a VPS while accessing local files through an SSH tunnel.
 - Agent daemon should only listen on 127.0.0.1 (not 0.0.0.0)
 - Use SSH key authentication, not passwords
 - Consider shorter TTL tokens when VPS security is uncertain
-- VPS firewall should block external access to port 4223
+- VPS firewall should block external access to port 53280
 
 ### Scenario 3: Docker Container
 
@@ -1094,10 +1094,10 @@ COPY public.key /etc/clawgate/
 
 RUN mkdir -p /var/lib/clawgate/tokens
 
-EXPOSE 4223
+EXPOSE 53280
 
 CMD ["clawgate", "--mode", "agent", \
-     "--listen", "0.0.0.0:4223", \
+     "--listen", "0.0.0.0:53280", \
      "--token-dir", "/var/lib/clawgate/tokens"]
 ```
 
@@ -1108,7 +1108,7 @@ services:
   clawgate-agent:
     build: .
     ports:
-      - "4223:4223"
+      - "53280:53280"
     volumes:
       - ./tokens:/var/lib/clawgate/tokens
     restart: unless-stopped
@@ -1126,7 +1126,7 @@ services:
 ```bash
 # Run agent daemon
 clawgate --mode agent [options]
-  --listen <addr:port>     Listen address (default: 0.0.0.0:4223)
+  --listen <addr:port>     Listen address (default: 0.0.0.0:53280)
   --token-dir <path>       Token directory (default: ~/.clawgate/tokens)
 
 # Run resource daemon
@@ -1287,7 +1287,7 @@ Events are also printed to stderr by the resource daemon.
 
 | Parameter | Value | Configurable |
 |-----------|-------|--------------|
-| Default port | 4223 | Yes |
+| Default port | 53280 | Yes |
 | Max message size | 100 MB | No |
 | Length prefix | 4 bytes | No |
 

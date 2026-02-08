@@ -81,7 +81,7 @@ clawgate token add "<paste-token-here>"
 
 ```bash
 clawgate --mode agent                              # agent machine (start first)
-clawgate --mode resource --connect <agent-ip>:4223 # your laptop
+clawgate --mode resource --connect <agent-ip>:53280 # your laptop
 ```
 
 Done. Your agent can now access exactly what you granted.
@@ -293,7 +293,7 @@ ClawGate is split into two cooperating sides: the **resource side** (your laptop
 - **AI Agent** - Any AI system (OpenClaw, Claude Code, Cursor, etc.), talks only to the local agent daemon, never has direct filesystem access
 - **MCP Server** (optional) - Runs over stdio, connects to the agent daemon via Unix socket, exposes `clawgate_read_file`, `clawgate_git`, `clawgate_tool`, and more
 
-The resource daemon connects to the agent daemon over TCP (`:4223`). All requests pass through this single encrypted channel. The resource daemon is the only component that touches the filesystem and executes tools.
+The resource daemon connects to the agent daemon over TCP (`:53280`). All requests pass through this single encrypted channel. The resource daemon is the only component that touches the filesystem and executes tools.
 
 ## Features
 
@@ -409,7 +409,7 @@ Monitoring:
   clawgate audit --json             Output as JSON (reserved)
 
 Daemon Options:
-  --listen <addr:port>              Listen address (agent mode, default 0.0.0.0:4223)
+  --listen <addr:port>              Listen address (agent mode, default 0.0.0.0:53280)
   --connect <host:port>             Connect address (resource mode)
   --public-key <path>               Public key path (resource mode)
   --token-dir <path>                Token directory (agent mode)

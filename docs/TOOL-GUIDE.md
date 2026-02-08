@@ -103,18 +103,18 @@ Expected output:
 ```
 Loading tokens from ~/.clawgate/tokens
 Loaded 0 token(s)
-Binding TCP listener on 0.0.0.0:4223
+Binding TCP listener on 0.0.0.0:53280
 Agent daemon ready, waiting for connections
 ```
 
-The agent daemon listens on port 4223 and waits for the resource daemon
+The agent daemon listens on port 53280 and waits for the resource daemon
 to connect. Leave this running.
 
 ### Step 5: Start the Resource Daemon
 
 **[primary]**
 ```bash
-clawgate --mode resource --connect <agent-ip>:4223
+clawgate --mode resource --connect <agent-ip>:53280
 ```
 
 Replace `<agent-ip>` with the agent machine's IP address (or
@@ -123,7 +123,7 @@ Replace `<agent-ip>` with the agent machine's IP address (or
 Expected output:
 
 ```
-Connecting to agent at <agent-ip>:4223
+Connecting to agent at <agent-ip>:53280
 Connected, performing handshake
 E2E session established
 ```
@@ -255,7 +255,7 @@ Stop both daemons with `Ctrl+C` in their respective terminals.
 resource daemon. The resource daemon connects to the agent, not the
 other way around.
 
-**Testing on one machine**: Use `--connect localhost:4223` on the
+**Testing on one machine**: Use `--connect localhost:53280` on the
 resource daemon if both daemons run on the same machine.
 
 ---

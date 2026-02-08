@@ -32,7 +32,7 @@ zig build run -- keygen
 zig build run -- --mode agent
 
 # Terminal 3: Start resource daemon (connects to agent)
-zig build run -- --mode resource --connect localhost:4223
+zig build run -- --mode resource --connect localhost:53280
 
 # Terminal 4: Grant access and test
 zig build run -- grant --read /tmp --ttl 1h

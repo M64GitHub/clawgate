@@ -54,13 +54,13 @@ The agent needs your public key to verify token signatures.
 
 ```bash
 clawgate --mode agent
-# Listening on 0.0.0.0:4223
+# Listening on 0.0.0.0:53280
 ```
 
 ### Primary Machine
 
 ```bash
-clawgate --mode resource --connect <agent-ip>:4223
+clawgate --mode resource --connect <agent-ip>:53280
 # E2E encrypted tunnel established!
 ```
 
@@ -204,7 +204,7 @@ clawgate grant --git /home/you/projects/myapp --ttl 24h
 | Command | Where | What |
 |---------|-------|------|
 | `clawgate --mode agent` | Agent | Start agent daemon |
-| `clawgate --mode resource --connect host:4223` | Primary | Connect to agent |
+| `clawgate --mode resource --connect host:53280` | Primary | Connect to agent |
 | `clawgate grant --read "path/**" --ttl 24h` | Primary | Create read token |
 | `clawgate grant --write "path/*" --ttl 8h` | Primary | Create write-only token |
 | `clawgate grant --git "repo/**" --ttl 24h` | Primary | Create git read-only token |
