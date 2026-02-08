@@ -342,8 +342,7 @@ ClawGate is a security tool. We take this seriously.
 ### Security Practices
 
 - **Security audit every development phase** - We don't ship without review
-- **No dynamic memory in hot path** - Bounded allocations only
-- **Fuzz tested** - Token parsing, path matching, JSON handling
+- **Output size limits** - File reads, git output, and tool output capped and truncated
 - **Zero dependencies** - Zig stdlib only, no supply chain risk
 
 ### Reporting Vulnerabilities
