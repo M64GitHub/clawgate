@@ -12,6 +12,8 @@ const crypto = @import("../capability/crypto.zig");
 const protocol = @import("../protocol/json.zig");
 const paths = @import("../path.zig");
 const audit_log = @import("audit_log.zig");
+const revocation_mod = @import("revocation.zig");
+const tools_mod = @import("tools.zig");
 const AuditLog = audit_log.AuditLog;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -79,13 +81,26 @@ pub fn runWithIo(
     );
 
     const alog = AuditLog.init(allocator, io, home) catch |err| {
-        std.log.warn(
-            "Failed to init audit log: {}, continuing without",
+        std.log.err(
+            "Failed to init audit log: {}, exiting",
             .{err},
         );
         return error.AuditLogInitFailed;
     };
     defer alog.deinit(io);
+
+    var tool_reg = tools_mod.ToolRegistry.load(
+        allocator,
+        io,
+        home,
+    ) catch {
+        std.log.err(
+            "Failed to load tool registry, exiting",
+            .{},
+        );
+        return error.ToolRegistryLoadFailed;
+    };
+    defer tool_reg.deinit(allocator);
 
     while (true) {
         connectAndServe(
@@ -94,6 +109,8 @@ pub fn runWithIo(
             config,
             public_key,
             &alog,
+            &tool_reg,
+            home,
         ) catch |err| {
             std.log.warn(
                 "Connection error: {}, reconnecting...",
@@ -115,6 +132,8 @@ fn connectAndServe(
     config: Config,
     public_key: crypto.PublicKey,
     alog: *const AuditLog,
+    tool_reg: *const tools_mod.ToolRegistry,
+    home: []const u8,
 ) !void {
     std.log.info(
         "Connecting to agent at {s}:{d}",
@@ -219,7 +238,16 @@ fn connectAndServe(
 
     std.log.info("E2E session established: {s}", .{session_id});
 
-    mainLoop(allocator, io, &enc_conn, public_key, config, alog);
+    mainLoop(
+        allocator,
+        io,
+        &enc_conn,
+        public_key,
+        config,
+        alog,
+        tool_reg,
+        home,
+    );
 }
 
 /// Main request processing loop. Runs until connection closes.
@@ -230,17 +258,40 @@ fn mainLoop(
     public_key: crypto.PublicKey,
     config: Config,
     alog: *const AuditLog,
+    tool_reg: *const tools_mod.ToolRegistry,
+    home: []const u8,
 ) void {
     while (true) {
-        const request_json = enc_conn.recvEncrypted(allocator) catch |err| {
+        const request_json = enc_conn.recvEncrypted(
+            allocator,
+        ) catch |err| {
             std.log.warn("Connection closed: {}", .{err});
             return;
         };
         defer allocator.free(request_json);
 
-        std.log.debug("Received request ({d} bytes)", .{request_json.len});
+        std.log.debug(
+            "Received request ({d} bytes)",
+            .{request_json.len},
+        );
 
-        const response_json = handlers.handleRequest(
+        // Reload revocation list per-request so revocations
+        // take effect without restarting the daemon.
+        var rev_list = revocation_mod.RevocationList.load(
+            allocator,
+            io,
+            home,
+        ) catch {
+            std.log.warn(
+                "Failed to reload revocation list",
+                .{},
+            );
+            sendErrorResponse(allocator, enc_conn);
+            continue;
+        };
+        defer rev_list.deinit(allocator);
+
+        const response_json = handlers.handleRequestFull(
             allocator,
             io,
             request_json,
@@ -249,6 +300,8 @@ fn mainLoop(
                 .expected_issuer = config.expected_issuer,
                 .expected_subject = config.expected_subject,
             },
+            &rev_list,
+            tool_reg,
         ) catch |err| {
             std.log.err("Handler error: {}", .{err});
             sendErrorResponse(allocator, enc_conn);
@@ -256,8 +309,14 @@ fn mainLoop(
         };
         defer allocator.free(response_json);
 
-        enc_conn.sendEncrypted(allocator, response_json) catch |err| {
-            std.log.warn("Failed to send response: {}", .{err});
+        enc_conn.sendEncrypted(
+            allocator,
+            response_json,
+        ) catch |err| {
+            std.log.warn(
+                "Failed to send response: {}",
+                .{err},
+            );
             return;
         };
 

@@ -81,7 +81,12 @@ pub const AuditLog = struct {
         if (parsed_req) |pr| {
             req_id = pr.value.id;
             op = pr.value.op;
-            path = pr.value.params.path;
+            // For tool ops, log tool_name; for file ops, log path
+            if (std.mem.eql(u8, op, "tool")) {
+                path = pr.value.params.tool_name orelse "unknown";
+            } else {
+                path = pr.value.params.path;
+            }
         }
 
         const success = std.mem.indexOf(

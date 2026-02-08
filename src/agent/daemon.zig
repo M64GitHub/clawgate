@@ -200,9 +200,8 @@ fn acceptAndHandle(
     io: Io,
     listener: *tcp.Listener,
     ipc: *unix.Server,
-    store: *const tokens.TokenStore,
+    store: *tokens.TokenStore,
 ) !void {
-    _ = store;
     var conn = listener.accept() catch {
         return DaemonError.BindFailed;
     };
@@ -293,7 +292,7 @@ fn acceptAndHandle(
 
     std.log.info("E2E session established: {s}", .{&session_id});
 
-    ipcServiceLoop(allocator, io, ipc, &conn);
+    ipcServiceLoop(allocator, io, ipc, &conn, store);
 
     state.clearConnection();
     enc_conn.deinit(allocator);
@@ -312,6 +311,7 @@ fn ipcServiceLoop(
     io: Io,
     ipc: *unix.Server,
     tcp_conn: *tcp.Connection,
+    store: *tokens.TokenStore,
 ) void {
     while (state.isConnected()) {
         var ipc_future = io.async(
@@ -352,7 +352,9 @@ fn ipcServiceLoop(
                     defer ipc_conn.close();
                     handleIpcRequest(
                         conn_alloc,
+                        io,
                         &ipc_conn,
+                        store,
                     );
                 }
             },
@@ -398,26 +400,85 @@ fn doTcpMonitor(
     allocator.free(data);
 }
 
-/// Handles a single IPC request.
-fn handleIpcRequest(conn_alloc: Allocator, ipc_conn: *unix.Connection) void {
+/// Handles a single IPC request. Inspects responses for
+/// TOKEN_REVOKED and auto-removes the offending token.
+fn handleIpcRequest(
+    conn_alloc: Allocator,
+    io: Io,
+    ipc_conn: *unix.Connection,
+    store: *tokens.TokenStore,
+) void {
     const request = ipc_conn.recv(conn_alloc) catch |err| {
-        std.log.warn("Failed to receive IPC request: {}", .{err});
+        std.log.warn(
+            "Failed to receive IPC request: {}",
+            .{err},
+        );
         return;
     };
     defer conn_alloc.free(request);
 
-    const response = sendRequest(conn_alloc, conn_alloc, request) catch |err| {
-        std.log.warn("Failed to forward IPC request: {}", .{err});
-        const error_response = buildErrorResponse(conn_alloc, err) catch return;
+    const response = sendRequest(
+        conn_alloc,
+        conn_alloc,
+        request,
+    ) catch |err| {
+        std.log.warn(
+            "Failed to forward IPC request: {}",
+            .{err},
+        );
+        const error_response = buildErrorResponse(
+            conn_alloc,
+            err,
+        ) catch return;
         defer conn_alloc.free(error_response);
         ipc_conn.send(error_response) catch {};
         return;
     };
     defer conn_alloc.free(response);
 
+    // Auto-remove revoked tokens from agent store.
+    // Load fresh store from disk since the daemon's in-memory
+    // store may be stale (tokens added after daemon start).
+    if (std.mem.indexOf(u8, response, "TOKEN_REVOKED")) |_| {
+        if (extractToken(request)) |raw_token| {
+            std.log.info(
+                "Token revoked, removing from store",
+                .{},
+            );
+            var fresh = tokens.TokenStore.loadFromDir(
+                conn_alloc,
+                io,
+                store.token_dir,
+            ) catch return;
+            defer fresh.deinit(conn_alloc);
+            fresh.removeByRaw(conn_alloc, io, raw_token);
+        }
+    }
+
     ipc_conn.send(response) catch |err| {
-        std.log.warn("Failed to send IPC response: {}", .{err});
+        std.log.warn(
+            "Failed to send IPC response: {}",
+            .{err},
+        );
     };
+}
+
+/// Extracts the token value from a request JSON string.
+/// Looks for "token":"<value>" and returns the value slice.
+fn extractToken(json: []const u8) ?[]const u8 {
+    const needle = "\"token\":\"";
+    const start = (std.mem.indexOf(
+        u8,
+        json,
+        needle,
+    ) orelse return null) + needle.len;
+    const rest = json[start..];
+    const end = std.mem.indexOfScalar(
+        u8,
+        rest,
+        '"',
+    ) orelse return null;
+    return rest[0..end];
 }
 
 /// Builds a JSON error response for IPC errors.
