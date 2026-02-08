@@ -98,6 +98,11 @@ clawgate --mode resource --connect <agent-ip>:4223
 
 **Done.** Your agent can now securely read files, run git commands, and invoke tools - depending on what you granted.
 
+> **Next steps:** See the [Custom Tools Guide](docs/TOOL-GUIDE.md) to
+> register and proxy your own tools, or the
+> [OpenClaw Quick Setup](docs/OPENCLAW-QUICK-SETUP.md) for a streamlined
+> 5-minute walkthrough.
+
 ## OpenClaw Integration
 
 ClawGate was built for [OpenClaw](https://github.com/openclaw/openclaw).  
@@ -300,7 +305,7 @@ Tool management commands (`register`, `update`, `remove`) automatically regenera
 | **Large file handling** | Files >512KB automatically truncated with metadata |
 | 🦞 **OpenClaw native** | Skill file included |
 | **Fast** | Pure Zig, zero dependencies, minimal latency |
-| **Defense-in-depth security** | 14 layers — see [Security](#security) below |
+| **Defense-in-depth security** | 14 layers - see [Security](#security) below |
 
 ## Security
 
@@ -503,12 +508,20 @@ ClawGate is split into two cooperating sides: the **resource side** (your laptop
 
 ## Documentation
 
+### Guides
+
 | Document | Description |
 |----------|-------------|
-| [**OpenClaw Quick Setup**](docs/OPENCLAW-QUICK-SETUP.md) | 5-minute setup guide for OpenClaw integration |
-| [**Design Document**](docs/DESIGN.md) | Technical reference: architecture, security model, protocol specification |
+| [**Quick Setup**](docs/OPENCLAW-QUICK-SETUP.md) | Get started: files and git access in 5 minutes |
+| [**Custom Tools Guide**](docs/TOOL-GUIDE.md) | Register, grant, and invoke your own tools |
+
+### Reference
+
+| Document | Description |
+|----------|-------------|
+| [**Design Document**](docs/DESIGN.md) | Architecture, security model, protocol specification |
 | [**Tool Feature Overview**](docs/TOOL-FEATURE-OVERVIEW.md) | Custom tools, token revocation, skill generation |
-| [**Glob Patterns**](docs/GLOBBING.md) | Complete reference for scope pattern matching with all edge cases |
+| [**Glob Patterns**](docs/GLOBBING.md) | Scope pattern matching with all edge cases |
 
 ## Roadmap
 

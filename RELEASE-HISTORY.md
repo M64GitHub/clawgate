@@ -2,6 +2,25 @@
 
 ---
 
+## v0.2.3
+
+This release adds human-readable expiration dates to token management
+commands, making it easy to see when tokens expire at a glance.
+
+### Token Expiration Display
+
+`clawgate token list` and `clawgate token show` now display expiration
+(and issuance) timestamps as ISO 8601 dates instead of raw Unix
+timestamps.
+
+### Files Changed
+
+- `src/resource/audit_log.zig` - Made `formatEpochBuf` public for reuse
+- `src/cli/token.zig` - Added formatted expiration dates to list and
+  show commands
+
+---
+
 ## v0.2.2
 
 This release adds persistent audit logging on the resource daemon,
