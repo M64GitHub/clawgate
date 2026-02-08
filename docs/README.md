@@ -19,8 +19,3 @@ Architecture, protocol details, and deep dives.
 | [**Tool Feature Overview**](TOOL-FEATURE-OVERVIEW.md) | Custom tools, token revocation, skill generation |
 | [**Glob Patterns**](GLOBBING.md) | Scope pattern matching with all edge cases |
 
-## Testing
-
-| Document | Description |
-|----------|-------------|
-| [**Tool Testing**](TOOL-TESTING.md) | Test scenarios for custom tools, revocation, and MCP |
