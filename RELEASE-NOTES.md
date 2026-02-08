@@ -1,45 +1,125 @@
-# ClawGate v0.2.3 Release Notes
+# ClawGate v0.3.0 Release Notes
 
-This release adds human-readable expiration dates to token management
-commands, making it easy to see when tokens expire at a glance.
+This release extends ClawGate beyond file and git access. You can now
+register **custom CLI tools** on your primary machine and invoke them
+from isolated agents through the same zero-trust pipeline: capability
+tokens, argument validation, output truncation, audit logging, and
+E2E encryption.
 
-## Token Expiration Display
+Also new: **token revocation**, **issuance tracking**, and **skill
+file generation**.
 
-`clawgate token list` and `clawgate token show` now display expiration
-(and issuance) timestamps as ISO 8601 dates instead of raw Unix
-timestamps.
+## Custom Tools
 
-**`token list` output:**
-```
-$ clawgate token list
-Stored tokens (6):
+Register any CLI tool on the resource machine and grant agents access
+to invoke it remotely:
 
-  ID:      cg_9ae7ce62f4a5b869a8c120fa
-  Issuer:  clawgate:resource
-  Subject: clawgate:agent
-  Scope:   ~/space/ai/remembra/** [read, list, stat, git]
-  Expires: 2026-02-08T05:51:26Z
-  Status:  Valid
-```
+```bash
+# Register a tool (primary machine)
+clawgate tool register calc \
+  --command "bc -l" \
+  --allow-args "-q" \
+  --timeout 10 \
+  --description "Calculator (bc)"
 
-**`token show` output:**
-```
-$ clawgate token show cg_7ab54be138936dfb8d29b81d
-Token: cg_7ab54be138936dfb8d29b81d
+# Grant access
+clawgate grant --tool calc --ttl 4h
 
-  Issuer:  clawgate:resource
-  Subject: clawgate:agent
-  Issued:  2026-02-07T06:02:28Z
-  Expires: 2026-02-08T06:02:28Z
-
-  Capabilities:
-    - files: ~/space/ai/tiger-style [read, list, stat, git]
-
-  Status: Valid
+# Invoke from agent
+echo "2+2" | clawgate tool calc
 ```
 
-### Files Changed
+### Security
 
-- `src/resource/audit_log.zig` - Made `formatEpochBuf` public for reuse
-- `src/cli/token.zig` - Added formatted expiration dates to list and
-  show commands
+- **Argument validation**: allowlist mode (only listed flags pass) or
+  passthrough mode (all flags except denied ones pass)
+- **No shell execution**: commands run via direct argv, never through
+  a shell
+- **Output truncation**: configurable per-tool output limit
+- **Per-tool capability**: tokens grant access to specific tools only
+
+### Management
+
+```bash
+clawgate tool ls                     # List tools
+clawgate tool info calc              # Show details
+clawgate tool update calc --timeout 30
+clawgate tool remove calc
+clawgate tool test calc -q           # Test locally (no daemon)
+```
+
+## Token Revocation
+
+Revoke tokens before they expire. The revocation list is checked on
+every request by the resource daemon.
+
+```bash
+clawgate revoke cg_abc123... --reason "compromised"
+clawgate revoke --all --reason "key rotation"
+clawgate revoked ls
+clawgate revoked clean               # Remove expired entries
+```
+
+A revoked token returns `TOKEN_REVOKED`. The agent daemon automatically
+removes rejected tokens from its local store.
+
+## Issuance Tracking
+
+Every token created by `clawgate grant` is recorded in
+`~/.clawgate/issued.json`. This enables bulk revocation (`--all`) and
+provides an audit trail of granted access.
+
+## Skill File Generation
+
+Generate markdown skill files from the tool registry, making tools
+discoverable by AI agents:
+
+```bash
+clawgate skills generate             # Generate to skills/clawgate/
+clawgate skills export /path/to/dir
+```
+
+## Grant Enhancements
+
+- `--tool <name>` flag (repeatable) grants access to specific tools
+- `--tools-all` grants access to all registered tools
+- Path argument is now optional for tool-only tokens
+- Combined tokens: `clawgate grant --read --tool calc /path/**`
+
+## MCP Integration
+
+New `clawgate_tool` MCP tool (6th tool) for invoking registered tools
+via JSON-RPC.
+
+## New Files
+
+| File | Purpose |
+|------|---------|
+| `src/resource/revocation.zig` | Revocation list management |
+| `src/resource/issuance.zig` | Issuance tracking |
+| `src/resource/tools.zig` | Tool registry (CRUD + persistence) |
+| `src/resource/tool_exec.zig` | Tool execution engine |
+| `src/resource/skills.zig` | Skill file generation |
+| `src/cli/revoke.zig` | `revoke` / `revoked` CLI |
+| `src/cli/tool_cmd.zig` | `tool` management + invocation CLI |
+| `src/cli/skills_cmd.zig` | `skills` generate/export CLI |
+
+## Modified Files
+
+| File | Changes |
+|------|---------|
+| `src/protocol/json.zig` | `"tool"` op, `ToolResult`, new params |
+| `src/resource/handlers.zig` | Revocation check, tool routing |
+| `src/resource/daemon.zig` | Loads registry + revocation list |
+| `src/resource/audit_log.zig` | Logs tool name for tool operations |
+| `src/cli/grant.zig` | `--tool`, `--tools-all`, issuance log |
+| `src/agent/mcp.zig` | `clawgate_tool` MCP tool |
+| `src/main.zig` | v0.3.0, new command routing |
+
+## Documentation
+
+- New: `docs/TOOL-GUIDE.md` - Practical guide for custom tools
+- New: `docs/README.md` - Documentation index
+- Updated: `docs/OPENCLAW-QUICK-SETUP.md` - Added git access, skill
+  file setup, chat-based token workflow
+- Updated: `README.md` - Guides/Reference doc sections

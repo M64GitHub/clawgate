@@ -6,6 +6,8 @@
 const std = @import("std");
 const crypto = @import("../capability/crypto.zig");
 const token = @import("../capability/token.zig");
+const tools_mod = @import("../resource/tools.zig");
+const issuance = @import("../resource/issuance.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -37,6 +39,12 @@ pub const GrantConfig = struct {
     git_write: bool = false,
     /// Allow git remote operations
     git_full: bool = false,
+    /// Tool names to grant access to
+    tool_names: [16][]const u8 = undefined,
+    /// Number of tool names
+    tool_count: usize = 0,
+    /// Grant access to all registered tools
+    tools_all: bool = false,
     /// Token TTL in seconds (default: 24h)
     ttl_seconds: i64 = 24 * 60 * 60,
     /// Path to secret key
@@ -127,6 +135,23 @@ pub fn grant(
             config.write = true;
             config.list = true;
             config.stat = true;
+        } else if (std.mem.eql(u8, arg, "--tool")) {
+            if (i + 1 >= args.len) {
+                printGrantUsage();
+                return GrantError.InvalidArgs;
+            }
+            i += 1;
+            if (config.tool_count >= 16) {
+                std.debug.print(
+                    "Error: Max 16 tools\n",
+                    .{},
+                );
+                return GrantError.InvalidArgs;
+            }
+            config.tool_names[config.tool_count] = args[i];
+            config.tool_count += 1;
+        } else if (std.mem.eql(u8, arg, "--tools-all")) {
+            config.tools_all = true;
         } else if (std.mem.eql(u8, arg, "--help") or
             std.mem.eql(u8, arg, "-h"))
         {
@@ -141,17 +166,24 @@ pub fn grant(
     }
 
     // Validate required arguments
-    if (config.path == null) {
-        std.debug.print("Error: Path is required\n\n", .{});
+    const has_tools = config.tool_count > 0 or config.tools_all;
+    const has_file_ops = config.read or config.write or
+        config.list or config.stat or config.git;
+
+    if (config.path == null and !has_tools) {
+        std.debug.print(
+            "Error: Path or --tool required\n\n",
+            .{},
+        );
         printGrantUsage();
         return GrantError.MissingPath;
     }
 
-    if (!config.read and !config.write and
-        !config.list and !config.stat and
-        !config.git)
-    {
-        std.debug.print("Error: At least one operation is required\n\n", .{});
+    if (config.path != null and !has_file_ops and !has_tools) {
+        std.debug.print(
+            "Error: At least one operation required\n\n",
+            .{},
+        );
         printGrantUsage();
         return GrantError.MissingOperations;
     }
@@ -212,14 +244,77 @@ pub fn grant(
         ops_count += 1;
     }
 
-    // Create capability
-    const capabilities = [_]token.Capability{
-        .{
+    // Build capabilities array (file + tool caps)
+    // Max: 1 file + 16 tools = 17
+    var caps_buf: [17]token.Capability = undefined;
+    var caps_count: usize = 0;
+
+    // File capability (if path given and file ops requested)
+    if (config.path != null and ops_count > 0) {
+        caps_buf[caps_count] = .{
             .r = "files",
             .o = ops_buf[0..ops_count],
             .s = config.path.?,
-        },
-    };
+        };
+        caps_count += 1;
+    }
+
+    // Tool capabilities
+    if (config.tools_all) {
+        const home_dir = home orelse {
+            std.debug.print("Error: HOME not set\n", .{});
+            return GrantError.KeyLoadFailed;
+        };
+        var reg = tools_mod.ToolRegistry.load(
+            allocator,
+            io,
+            home_dir,
+        ) catch {
+            std.debug.print(
+                "Error: Failed to load tool registry\n",
+                .{},
+            );
+            return GrantError.InvalidArgs;
+        };
+        defer reg.deinit(allocator);
+
+        const names = reg.listNames(allocator) catch
+            return GrantError.OutOfMemory;
+        defer allocator.free(names);
+
+        const invoke_op = [_][]const u8{"invoke"};
+        for (names) |name| {
+            if (caps_count >= caps_buf.len) break;
+            caps_buf[caps_count] = .{
+                .r = "tools",
+                .o = &invoke_op,
+                .s = name,
+            };
+            caps_count += 1;
+        }
+    } else {
+        const invoke_op = [_][]const u8{"invoke"};
+        for (
+            config.tool_names[0..config.tool_count],
+        ) |name| {
+            if (caps_count >= caps_buf.len) break;
+            caps_buf[caps_count] = .{
+                .r = "tools",
+                .o = &invoke_op,
+                .s = name,
+            };
+            caps_count += 1;
+        }
+    }
+
+    if (caps_count == 0) {
+        std.debug.print(
+            "Error: No capabilities to grant\n\n",
+            .{},
+        );
+        printGrantUsage();
+        return GrantError.MissingOperations;
+    }
 
     // Create token
     const jwt = token.createToken(
@@ -228,13 +323,16 @@ pub fn grant(
         secret_key,
         config.issuer,
         config.subject,
-        &capabilities,
+        caps_buf[0..caps_count],
         config.ttl_seconds,
     ) catch {
         std.debug.print("Error: Failed to create token\n", .{});
         return GrantError.TokenCreateFailed;
     };
     defer allocator.free(jwt);
+
+    // Record issuance (non-fatal)
+    recordIssuance(allocator, io, jwt, home) catch {};
 
     // Output token to stdout (not stderr)
     const stdout = std.Io.File.stdout();
@@ -270,6 +368,32 @@ fn parseTtl(s: []const u8) ?i64 {
     }
 }
 
+/// Records token issuance in the issuance log.
+fn recordIssuance(
+    allocator: Allocator,
+    io: Io,
+    jwt: []const u8,
+    home: ?[]const u8,
+) !void {
+    const home_dir = home orelse return;
+    var tok = token.Token.parse(allocator, jwt) catch return;
+    defer tok.deinit(allocator);
+
+    var log = issuance.IssuanceLog.load(
+        allocator,
+        io,
+        home_dir,
+    ) catch return;
+    defer log.deinit(allocator);
+
+    log.record(allocator, io, .{
+        .id = tok.getId(),
+        .scope = "",
+        .issued_at = "",
+        .expires_at = "",
+    }) catch {};
+}
+
 /// Prints grant command usage.
 fn printGrantUsage() void {
     const usage =
@@ -291,6 +415,8 @@ fn printGrantUsage() void {
         \\      --git             Git read-only (+ read, list, stat)
         \\      --git-write       Git read+write (+ file write)
         \\      --git-full        Git full access (+ push/pull/fetch)
+        \\      --tool <name>     Grant tool access (repeatable)
+        \\      --tools-all       Grant access to all registered tools
         \\
         \\Options:
         \\  -t, --ttl <duration>  Token lifetime (default: 24h)
@@ -310,8 +436,9 @@ fn printGrantUsage() void {
         \\  clawgate grant --read --write --ttl 1h /tmp/shared/*
         \\  clawgate grant -r -t 7d /data/** > token.txt
         \\  clawgate grant --git ~/projects/**
-        \\  clawgate grant --git-write ~/projects/**
-        \\  clawgate grant --git-full ~/projects/**
+        \\  clawgate grant --tool calc --ttl 1h
+        \\  clawgate grant --read --tool calc /tmp/**
+        \\  clawgate grant --tools-all --ttl 4h
         \\
     ;
     std.debug.print("{s}", .{usage});

@@ -10,6 +10,9 @@ const crypto = @import("../capability/crypto.zig");
 const scope = @import("../capability/scope.zig");
 const files = @import("files.zig");
 const git_mod = @import("git.zig");
+const revocation = @import("revocation.zig");
+const tools_mod = @import("tools.zig");
+const tool_exec = @import("tool_exec.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -31,6 +34,11 @@ pub const ErrorCode = struct {
     pub const GIT_BLOCKED = "GIT_BLOCKED";
     pub const GIT_NOT_REPO = "GIT_NOT_REPO";
     pub const GIT_TIMEOUT = "GIT_TIMEOUT";
+    pub const TOKEN_REVOKED = "TOKEN_REVOKED";
+    pub const TOOL_DENIED = "TOOL_DENIED";
+    pub const TOOL_TIMEOUT = "TOOL_TIMEOUT";
+    pub const TOOL_ERROR = "TOOL_ERROR";
+    pub const ARG_BLOCKED = "ARG_BLOCKED";
 };
 
 pub const HandlerError = error{
@@ -53,6 +61,27 @@ pub fn handleRequest(
     request_json: []const u8,
     public_key: crypto.PublicKey,
     identity: IdentityOptions,
+) HandlerError![]const u8 {
+    return handleRequestFull(
+        allocator,
+        io,
+        request_json,
+        public_key,
+        identity,
+        null,
+        null,
+    );
+}
+
+/// Handles a request with optional revocation + tool registry.
+pub fn handleRequestFull(
+    allocator: Allocator,
+    io: Io,
+    request_json: []const u8,
+    public_key: crypto.PublicKey,
+    identity: IdentityOptions,
+    rev_list: ?*const revocation.RevocationList,
+    tool_registry: ?*const tools_mod.ToolRegistry,
 ) HandlerError![]const u8 {
     var parsed_req = protocol.parseRequest(
         allocator,
@@ -139,6 +168,29 @@ pub fn handleRequest(
             ErrorCode.TOKEN_EXPIRED,
             "Token has expired",
         ) catch return HandlerError.OutOfMemory;
+    }
+
+    // Check revocation after expiry
+    if (rev_list) |rl| {
+        if (rl.isRevoked(tok.getId())) {
+            return protocol.formatError(
+                allocator,
+                req.id,
+                ErrorCode.TOKEN_REVOKED,
+                "Token has been revoked",
+            ) catch return HandlerError.OutOfMemory;
+        }
+    }
+
+    // Route tool operations (different validation from file ops)
+    if (std.mem.eql(u8, req.op, "tool")) {
+        return handleToolRequest(
+            allocator,
+            io,
+            req,
+            &tok,
+            tool_registry,
+        );
     }
 
     // Canonicalize path to prevent traversal attacks (e.g., /../)
@@ -427,6 +479,137 @@ fn executeGitOp(
     });
 }
 
+/// Handles a tool execution request.
+fn handleToolRequest(
+    allocator: Allocator,
+    io: Io,
+    req: protocol.Request,
+    tok: *const token_mod.Token,
+    registry: ?*const tools_mod.ToolRegistry,
+) HandlerError![]const u8 {
+    const tool_name = req.params.tool_name orelse {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.INVALID_REQUEST,
+            "Missing tool_name",
+        ) catch return HandlerError.OutOfMemory;
+    };
+
+    const reg = registry orelse {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.TOOL_DENIED,
+            "No tool registry",
+        ) catch return HandlerError.OutOfMemory;
+    };
+
+    const config = reg.get(tool_name) orelse {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.TOOL_DENIED,
+            "Tool not registered",
+        ) catch return HandlerError.OutOfMemory;
+    };
+
+    if (!tok.allows("tools", "invoke", tool_name)) {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.TOOL_DENIED,
+            "Token lacks tool access",
+        ) catch return HandlerError.OutOfMemory;
+    }
+
+    // Validate args
+    const tool_args = req.params.tool_args orelse
+        &[_][]const u8{};
+    tool_exec.validateArgs(config.*, tool_args) catch {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.ARG_BLOCKED,
+            "Blocked argument",
+        ) catch return HandlerError.OutOfMemory;
+    };
+
+    // Decode base64 input
+    const decoded_input: ?[]const u8 =
+        if (req.params.input) |enc|
+        protocol.decodeBase64(allocator, enc) catch null
+    else
+        null;
+    defer if (decoded_input) |d| allocator.free(d);
+
+    // Execute
+    var result = tool_exec.executeTool(
+        allocator,
+        io,
+        config.*,
+        tool_args,
+        decoded_input,
+    ) catch |err| {
+        return switch (err) {
+            tool_exec.ExecError.ArgBlocked => {
+                return protocol.formatError(
+                    allocator,
+                    req.id,
+                    ErrorCode.ARG_BLOCKED,
+                    "Blocked argument",
+                ) catch return HandlerError.OutOfMemory;
+            },
+            tool_exec.ExecError.OutputTooLong => {
+                return protocol.formatError(
+                    allocator,
+                    req.id,
+                    ErrorCode.TOOL_ERROR,
+                    "Tool output too large",
+                ) catch return HandlerError.OutOfMemory;
+            },
+            tool_exec.ExecError.SpawnFailed => {
+                return protocol.formatError(
+                    allocator,
+                    req.id,
+                    ErrorCode.TOOL_ERROR,
+                    "Failed to execute tool",
+                ) catch return HandlerError.OutOfMemory;
+            },
+            tool_exec.ExecError.OutOfMemory => {
+                return protocol.formatError(
+                    allocator,
+                    req.id,
+                    ErrorCode.INTERNAL_ERROR,
+                    "Out of memory",
+                ) catch return HandlerError.OutOfMemory;
+            },
+            else => {
+                return protocol.formatError(
+                    allocator,
+                    req.id,
+                    ErrorCode.TOOL_ERROR,
+                    "Tool execution error",
+                ) catch return HandlerError.OutOfMemory;
+            },
+        };
+    };
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    return protocol.formatSuccess(allocator, req.id, .{
+        .tool = .{
+            .tool_name = tool_name,
+            .stdout = result.stdout,
+            .stderr = result.stderr,
+            .exit_code = result.exit_code,
+            .truncated = result.truncated,
+        },
+    }) catch return HandlerError.OutOfMemory;
+}
+
 /// Forbidden directory components. If any path component exactly matches
 /// one of these, access is denied for that component and all children.
 const FORBIDDEN_DIRS = [_][]const u8{
@@ -584,6 +767,10 @@ fn mapFileError(
         => .{
             ErrorCode.GIT_BLOCKED,
             "Blocked git command or argument",
+        },
+        tool_exec.ExecError.ArgBlocked => .{
+            ErrorCode.ARG_BLOCKED,
+            "Blocked tool argument",
         },
         else => .{
             ErrorCode.INTERNAL_ERROR,

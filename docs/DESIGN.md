@@ -1,6 +1,6 @@
 # ClawGate Design Document
 
-**Version:** 0.2.3
+**Version:** 0.3.0
 **Status:** Implementation Complete
 
 ## Executive Summary

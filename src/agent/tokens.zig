@@ -222,6 +222,46 @@ pub const TokenStore = struct {
         ) catch self.tokens[0 .. self.tokens.len - 1];
     }
 
+    /// Removes a token by its raw JWT string.
+    /// Used by the agent daemon to auto-remove tokens
+    /// rejected with TOKEN_REVOKED.
+    pub fn removeByRaw(
+        self: *TokenStore,
+        allocator: Allocator,
+        io: Io,
+        raw: []const u8,
+    ) void {
+        var found_idx: ?usize = null;
+        for (self.tokens, 0..) |*tok, i| {
+            if (std.mem.eql(u8, tok.raw, raw)) {
+                found_idx = i;
+                break;
+            }
+        }
+        const idx = found_idx orelse return;
+
+        Dir.deleteFile(
+            .cwd(),
+            io,
+            self.tokens[idx].file_path,
+        ) catch {};
+
+        freeStoredToken(allocator, &self.tokens[idx]);
+
+        if (idx < self.tokens.len - 1) {
+            std.mem.copyForwards(
+                StoredToken,
+                self.tokens[idx..],
+                self.tokens[idx + 1 ..],
+            );
+        }
+
+        self.tokens = allocator.realloc(
+            self.tokens,
+            self.tokens.len - 1,
+        ) catch self.tokens[0 .. self.tokens.len - 1];
+    }
+
     /// Returns all tokens for listing.
     pub fn list(self: *TokenStore) []StoredToken {
         return self.tokens;

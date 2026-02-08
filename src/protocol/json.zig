@@ -16,8 +16,8 @@ pub const ProtocolError = error{
 
 /// Request parameters for file operations.
 pub const Params = struct {
-    /// File or directory path (required)
-    path: []const u8,
+    /// File or directory path (required for file/git ops)
+    path: []const u8 = "",
     /// Read offset in bytes
     offset: ?usize = null,
     /// Maximum bytes to read
@@ -30,6 +30,12 @@ pub const Params = struct {
     depth: ?u8 = null,
     /// Git command arguments (for op="git")
     args: ?[]const []const u8 = null,
+    /// Tool name (for op="tool")
+    tool_name: ?[]const u8 = null,
+    /// Tool arguments (for op="tool")
+    tool_args: ?[]const []const u8 = null,
+    /// Stdin data for tool (for op="tool")
+    input: ?[]const u8 = null,
 };
 
 /// A file operation request.
@@ -100,6 +106,20 @@ pub const GitResult = struct {
     truncated: bool,
 };
 
+/// Result of a tool execution.
+pub const ToolResult = struct {
+    /// Tool name
+    tool_name: []const u8,
+    /// Tool stdout output
+    stdout: []const u8,
+    /// Tool stderr output
+    stderr: []const u8,
+    /// Tool process exit code
+    exit_code: u8,
+    /// True if output was truncated
+    truncated: bool,
+};
+
 /// Union of all possible result types.
 pub const Result = union(enum) {
     read: ReadResult,
@@ -107,6 +127,7 @@ pub const Result = union(enum) {
     list: ListResult,
     stat: StatResult,
     git: GitResult,
+    tool: ToolResult,
 };
 
 /// Error details in a response.
@@ -141,7 +162,7 @@ pub const ParsedRequest = struct {
 
 /// Valid operations.
 const valid_operations = [_][]const u8{
-    "read", "write", "list", "stat", "git",
+    "read", "write", "list", "stat", "git", "tool",
 };
 
 /// Parses JSON bytes into a Request.
@@ -242,6 +263,21 @@ pub fn formatResponse(allocator: Allocator, response: Response) ![]const u8 {
                     .{
                         g.exit_code,
                         if (g.truncated) "true" else "false",
+                    },
+                );
+            },
+            .tool => |t| {
+                try writer.writeAll("{\"tool_name\":\"");
+                try writeJsonEscaped(writer, t.tool_name);
+                try writer.writeAll("\",\"stdout\":\"");
+                try writeJsonEscaped(writer, t.stdout);
+                try writer.writeAll("\",\"stderr\":\"");
+                try writeJsonEscaped(writer, t.stderr);
+                try writer.print(
+                    "\",\"exit_code\":{d},\"truncated\":{s}}}",
+                    .{
+                        t.exit_code,
+                        if (t.truncated) "true" else "false",
                     },
                 );
             },
@@ -702,11 +738,13 @@ test "parse request - missing required fields" {
     ;
     try std.testing.expectError(ProtocolError.InvalidJson, parseRequest(allocator, json2));
 
-    // Missing "path" in params
+    // Empty params now valid (path defaults to "")
     const json3 =
         \\{"id":"r1","token":"t","op":"read","params":{}}
     ;
-    try std.testing.expectError(ProtocolError.InvalidJson, parseRequest(allocator, json3));
+    var parsed3 = try parseRequest(allocator, json3);
+    defer parsed3.deinit();
+    try std.testing.expectEqualStrings("", parsed3.value.params.path);
 }
 
 test "parse request - empty strings accepted" {
@@ -796,6 +834,70 @@ test "base64 decode - padding variations" {
     const d3 = try decodeBase64(allocator, "YWJj");
     defer allocator.free(d3);
     try std.testing.expectEqualStrings("abc", d3);
+}
+
+test "parse tool request" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{"id":"t1","token":"tok","op":"tool",
+    ++
+        \\"params":{"tool_name":"calc","input":"2+2"}}
+    ;
+
+    var parsed = try parseRequest(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("tool", parsed.value.op);
+    try std.testing.expectEqualStrings(
+        "calc",
+        parsed.value.params.tool_name.?,
+    );
+    try std.testing.expectEqualStrings(
+        "2+2",
+        parsed.value.params.input.?,
+    );
+}
+
+test "format tool response" {
+    const allocator = std.testing.allocator;
+
+    const json = try formatSuccess(allocator, "req_t", .{
+        .tool = .{
+            .tool_name = "calc",
+            .stdout = "4\n",
+            .stderr = "",
+            .exit_code = 0,
+            .truncated = false,
+        },
+    });
+    defer allocator.free(json);
+
+    const parsed = try std.json.parseFromSlice(
+        struct {
+            id: []const u8,
+            ok: bool,
+            result: struct {
+                tool_name: []const u8,
+                stdout: []const u8,
+                stderr: []const u8,
+                exit_code: u8,
+                truncated: bool,
+            },
+        },
+        allocator,
+        json,
+        .{},
+    );
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("req_t", parsed.value.id);
+    try std.testing.expect(parsed.value.ok);
+    const r = parsed.value.result;
+    try std.testing.expectEqualStrings("calc", r.tool_name);
+    try std.testing.expectEqualStrings("4\n", r.stdout);
+    try std.testing.expectEqual(@as(u8, 0), r.exit_code);
+    try std.testing.expect(!r.truncated);
 }
 
 test "format response - filenames with special chars" {

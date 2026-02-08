@@ -14,8 +14,11 @@ const token_cmd = @import("cli/token.zig");
 const file_cmds = @import("cli/file_cmds.zig");
 const git_cmd = @import("cli/git_cmd.zig");
 const audit_cmd = @import("cli/audit.zig");
+const revoke_cmd = @import("cli/revoke.zig");
+const tool_cmd = @import("cli/tool_cmd.zig");
+const skills_cmd = @import("cli/skills_cmd.zig");
 
-pub const version = "0.2.3";
+pub const version = "0.3.0";
 
 /// Main entry point using Zig 0.16's std.process.Init.
 pub fn main(init: std.process.Init) !void {
@@ -124,6 +127,43 @@ pub fn main(init: std.process.Init) !void {
         };
     } else if (std.mem.eql(u8, cmd, "token")) {
         token_cmd.run(allocator, io, cmd_args, home) catch {
+            std.process.exit(1);
+        };
+    } else if (std.mem.eql(u8, cmd, "revoke")) {
+        revoke_cmd.revoke(
+            allocator,
+            io,
+            cmd_args,
+            home,
+        ) catch {
+            std.process.exit(1);
+        };
+    } else if (std.mem.eql(u8, cmd, "revoked")) {
+        revoke_cmd.revoked(
+            allocator,
+            io,
+            cmd_args,
+            home,
+        ) catch {
+            std.process.exit(1);
+        };
+    } else if (std.mem.eql(u8, cmd, "tool")) {
+        tool_cmd.run(
+            allocator,
+            io,
+            cmd_args,
+            home,
+            init.minimal.environ,
+        ) catch {
+            std.process.exit(1);
+        };
+    } else if (std.mem.eql(u8, cmd, "skills")) {
+        skills_cmd.run(
+            allocator,
+            io,
+            cmd_args,
+            home,
+        ) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, cmd, "version") or
@@ -284,11 +324,15 @@ fn printUsage() void {
         \\  clawgate mcp-server               Run MCP server (stdio)
         \\
         \\Capability Management (primary machine):
-        \\  clawgate grant [opts] <path>      Grant access to path
+        \\  clawgate grant [opts] <path>      Grant access to path/tools
         \\    --read                          Allow read operations
         \\    --write                         Allow write operations
+        \\    --tool <name>                   Grant tool access
+        \\    --tools-all                     Grant all tools
         \\    --ttl <duration>                Token lifetime (2h, 24h, 7d)
         \\  clawgate keygen                   Generate Ed25519 keypair
+        \\  clawgate revoke <id>              Revoke a token
+        \\  clawgate revoked ls|clean         Manage revocations
         \\
         \\Token Management (agent machine):
         \\  clawgate token add <token>        Add a capability token
@@ -301,6 +345,12 @@ fn printUsage() void {
         \\  clawgate write <path>             Write file (stdin or --content)
         \\  clawgate stat <path>              Get file info
         \\  clawgate git <repo> <args...>     Run git command
+        \\
+        \\Tool Operations:
+        \\  clawgate tool register <name>     Register a custom tool
+        \\  clawgate tool ls                  List registered tools
+        \\  clawgate tool <name> [args]       Invoke a tool
+        \\  clawgate skills generate          Generate skill files
         \\
         \\Monitoring:
         \\  clawgate audit                    Watch audit log
@@ -324,7 +374,7 @@ fn printUsage() void {
 
 test "version string is valid" {
     try std.testing.expect(version.len > 0);
-    try std.testing.expect(std.mem.eql(u8, version, "0.2.3"));
+    try std.testing.expect(std.mem.eql(u8, version, "0.3.0"));
 }
 
 test {
@@ -351,5 +401,13 @@ test {
     _ = @import("cli/file_cmds.zig");
     _ = @import("cli/git_cmd.zig");
     _ = @import("cli/audit.zig");
+    _ = @import("cli/revoke.zig");
+    _ = @import("cli/tool_cmd.zig");
+    _ = @import("cli/skills_cmd.zig");
+    _ = @import("resource/revocation.zig");
+    _ = @import("resource/issuance.zig");
+    _ = @import("resource/tools.zig");
+    _ = @import("resource/tool_exec.zig");
+    _ = @import("resource/skills.zig");
     _ = @import("config/config.zig");
 }

@@ -199,7 +199,7 @@ fn handleInitialize(allocator: Allocator, id: ?std.json.Value) ![]const u8 {
     try writer.writeAll("\"capabilities\":{\"tools\":{}},");
     try writer.writeAll("\"serverInfo\":{");
     try writer.writeAll("\"name\":\"clawgate\",");
-    try writer.writeAll("\"version\":\"0.2.3\"");
+    try writer.writeAll("\"version\":\"0.3.0\"");
     try writer.writeAll("}}}");
 
     const result = output.written();
@@ -285,6 +285,31 @@ fn handleToolsList(allocator: Allocator, id: ?std.json.Value) ![]const u8 {
     try writer.writeAll("[\\\"status\\\", \\\"--short\\\"])\"");
     try writer.writeAll("}},\"required\":[\"path\",\"args\"]}}");
 
+    try writer.writeAll(",");
+
+    // clawgate_tool
+    try writer.writeAll("{\"name\":\"clawgate_tool\",");
+    try writer.writeAll("\"description\":");
+    try writer.writeAll(
+        "\"Run a registered tool on the primary machine\",",
+    );
+    try writer.writeAll("\"inputSchema\":{\"type\":\"object\",");
+    try writer.writeAll("\"properties\":{");
+    try writer.writeAll("\"tool\":{\"type\":\"string\",");
+    try writer.writeAll(
+        "\"description\":\"Tool name\"},",
+    );
+    try writer.writeAll("\"args\":{\"type\":\"array\",");
+    try writer.writeAll("\"items\":{\"type\":\"string\"},");
+    try writer.writeAll(
+        "\"description\":\"Arguments\"},",
+    );
+    try writer.writeAll("\"input\":{\"type\":\"string\",");
+    try writer.writeAll(
+        "\"description\":\"Stdin data for the tool\"}",
+    );
+    try writer.writeAll("},\"required\":[\"tool\"]}}");
+
     try writer.writeAll("]}}");
 
     const result = output.written();
@@ -355,6 +380,17 @@ fn handleToolsCall(
             "arguments must be object",
         ),
     };
+
+    // Handle clawgate_tool before path extraction (no path needed)
+    if (std.mem.eql(u8, name, "clawgate_tool")) {
+        return executeToolCall(
+            allocator,
+            environ,
+            id,
+            args,
+            store,
+        );
+    }
 
     const path_val = args.get("path") orelse {
         return formatError(
@@ -894,6 +930,255 @@ fn executeGitTool(
     return formatToolResult(allocator, id, "");
 }
 
+/// Executes clawgate_tool.
+fn executeToolCall(
+    allocator: Allocator,
+    environ: std.process.Environ,
+    id: ?std.json.Value,
+    args: std.json.ObjectMap,
+    store: *tokens.TokenStore,
+) ![]const u8 {
+    const tool_val = args.get("tool") orelse {
+        return formatError(
+            allocator,
+            id,
+            McpError.INVALID_PARAMS,
+            "Missing tool",
+        );
+    };
+    const tool_name = switch (tool_val) {
+        .string => |s| s,
+        else => return formatError(
+            allocator,
+            id,
+            McpError.INVALID_PARAMS,
+            "tool must be string",
+        ),
+    };
+
+    const tok = store.findForPath(
+        "tools",
+        "invoke",
+        tool_name,
+    ) orelse {
+        return formatError(
+            allocator,
+            id,
+            McpError.NO_TOKEN,
+            "No capability token for tool",
+        );
+    };
+
+    // Extract optional args array
+    var tool_args: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer tool_args.deinit(allocator);
+
+    if (args.get("args")) |args_val| {
+        const arr = switch (args_val) {
+            .array => |a| a,
+            else => return formatError(
+                allocator,
+                id,
+                McpError.INVALID_PARAMS,
+                "args must be array",
+            ),
+        };
+        for (arr.items) |item| {
+            const s = switch (item) {
+                .string => |s| s,
+                else => return formatError(
+                    allocator,
+                    id,
+                    McpError.INVALID_PARAMS,
+                    "args must be strings",
+                ),
+            };
+            tool_args.append(allocator, s) catch {
+                return formatError(
+                    allocator,
+                    id,
+                    McpError.INTERNAL_ERROR,
+                    "Out of memory",
+                );
+            };
+        }
+    }
+
+    // Extract optional input
+    var input: ?[]const u8 = null;
+    if (args.get("input")) |input_val| {
+        input = switch (input_val) {
+            .string => |s| s,
+            else => null,
+        };
+    }
+
+    const response = sendToolRequest(
+        allocator,
+        environ,
+        tool_name,
+        tok.raw,
+        tool_args.items,
+        input,
+    ) catch |err| {
+        return mapConnectionError(allocator, id, err);
+    };
+    defer allocator.free(response);
+
+    // Parse response
+    const parsed = std.json.parseFromSlice(
+        struct {
+            ok: bool,
+            result: ?struct {
+                tool_name: []const u8 = "",
+                stdout: []const u8 = "",
+                stderr: []const u8 = "",
+                exit_code: u8 = 0,
+                truncated: bool = false,
+            } = null,
+            @"error": ?struct {
+                code: []const u8,
+                message: []const u8,
+            } = null,
+        },
+        allocator,
+        response,
+        .{ .ignore_unknown_fields = true },
+    ) catch {
+        return formatError(
+            allocator,
+            id,
+            McpError.INTERNAL_ERROR,
+            "Invalid response from daemon",
+        );
+    };
+    defer parsed.deinit();
+
+    if (!parsed.value.ok) {
+        if (parsed.value.@"error") |e| {
+            return formatError(
+                allocator,
+                id,
+                mapProtocolError(e.code),
+                e.message,
+            );
+        }
+        return formatError(
+            allocator,
+            id,
+            McpError.INTERNAL_ERROR,
+            "Unknown error",
+        );
+    }
+
+    if (parsed.value.result) |result| {
+        var output: std.Io.Writer.Allocating = .init(
+            allocator,
+        );
+        errdefer output.deinit();
+        const writer = &output.writer;
+
+        if (result.stdout.len > 0) {
+            try writer.writeAll(result.stdout);
+        }
+        if (result.stderr.len > 0) {
+            if (result.stdout.len > 0) {
+                try writer.writeAll(
+                    "\n--- stderr ---\n",
+                );
+            }
+            try writer.writeAll(result.stderr);
+        }
+        if (result.exit_code != 0) {
+            try writer.print(
+                "\n[exit code: {d}]",
+                .{result.exit_code},
+            );
+        }
+        if (result.truncated) {
+            try writer.writeAll("\n[output truncated]");
+        }
+
+        const text = output.written();
+        const text_copy = try allocator.dupe(u8, text);
+        defer allocator.free(text_copy);
+        output.deinit();
+
+        return formatToolResult(allocator, id, text_copy);
+    }
+
+    return formatToolResult(allocator, id, "");
+}
+
+/// Sends a tool request via IPC to the agent daemon.
+fn sendToolRequest(
+    allocator: Allocator,
+    environ: std.process.Environ,
+    tool_name: []const u8,
+    token_raw: []const u8,
+    tool_args: []const []const u8,
+    input: ?[]const u8,
+) ![]const u8 {
+    var id_buf: [16]u8 = undefined;
+    @memset(&id_buf, 't');
+    const id_str = &id_buf;
+
+    var request_json: std.Io.Writer.Allocating = .init(
+        allocator,
+    );
+    defer request_json.deinit();
+    const pw = &request_json.writer;
+
+    try pw.writeAll("{\"id\":\"");
+    try pw.writeAll(id_str);
+    try pw.writeAll("\",\"token\":\"");
+    try writeJsonEscaped(pw, token_raw);
+    try pw.writeAll("\",\"op\":\"tool\"");
+    try pw.writeAll(",\"params\":{\"tool_name\":\"");
+    try writeJsonEscaped(pw, tool_name);
+    try pw.writeAll("\"");
+
+    if (tool_args.len > 0) {
+        try pw.writeAll(",\"tool_args\":[");
+        for (tool_args, 0..) |arg, idx| {
+            if (idx > 0) try pw.writeAll(",");
+            try pw.writeAll("\"");
+            try writeJsonEscaped(pw, arg);
+            try pw.writeAll("\"");
+        }
+        try pw.writeAll("]");
+    }
+
+    if (input) |inp| {
+        try pw.writeAll(",\"input\":\"");
+        try writeJsonEscaped(pw, inp);
+        try pw.writeAll("\"");
+    }
+
+    try pw.writeAll("}}");
+
+    const response_data = ipc_client.sendRequest(
+        allocator,
+        environ,
+        request_json.written(),
+    ) catch |err| {
+        return switch (err) {
+            ipc_client.IpcError.DaemonNotRunning => {
+                return error.NotConnected;
+            },
+            ipc_client.IpcError.ConnectionFailed => {
+                return error.ConnectionClosed;
+            },
+            ipc_client.IpcError.OutOfMemory => {
+                return error.OutOfMemory;
+            },
+            else => error.ConnectionError,
+        };
+    };
+
+    return response_data;
+}
+
 /// Sends a git request via IPC to the agent daemon.
 fn sendGitRequest(
     allocator: Allocator,
@@ -1327,6 +1612,10 @@ fn mapProtocolError(code: []const u8) i32 {
     if (scope_viol) return McpError.SCOPE_VIOLATION;
     if (std.mem.eql(u8, code, "INVALID_TOKEN")) return McpError.NO_TOKEN;
     if (std.mem.eql(u8, code, "TOKEN_EXPIRED")) return McpError.TOKEN_EXPIRED;
+    if (std.mem.eql(u8, code, "TOKEN_REVOKED")) return McpError.NO_TOKEN;
+    if (std.mem.eql(u8, code, "TOOL_DENIED")) return McpError.ACCESS_DENIED;
+    if (std.mem.eql(u8, code, "TOOL_ERROR")) return McpError.INTERNAL_ERROR;
+    if (std.mem.eql(u8, code, "ARG_BLOCKED")) return McpError.ACCESS_DENIED;
     return McpError.INTERNAL_ERROR;
 }
 
@@ -1391,7 +1680,7 @@ test "handleInitialize returns capabilities" {
     try std.testing.expectEqualStrings("2.0", parsed.value.jsonrpc);
     const info = parsed.value.result.serverInfo;
     try std.testing.expectEqualStrings("clawgate", info.name);
-    try std.testing.expectEqualStrings("0.2.3", info.version);
+    try std.testing.expectEqualStrings("0.3.0", info.version);
 }
 
 test "handleToolsList returns all tools" {
@@ -1416,7 +1705,7 @@ test "handleToolsList returns all tools" {
     );
     defer parsed.deinit();
 
-    try std.testing.expectEqual(@as(usize, 5), parsed.value.result.tools.len);
+    try std.testing.expectEqual(@as(usize, 6), parsed.value.result.tools.len);
     try std.testing.expectEqualStrings(
         "clawgate_read_file",
         parsed.value.result.tools[0].name,
@@ -1436,6 +1725,10 @@ test "handleToolsList returns all tools" {
     try std.testing.expectEqualStrings(
         "clawgate_git",
         parsed.value.result.tools[4].name,
+    );
+    try std.testing.expectEqualStrings(
+        "clawgate_tool",
+        parsed.value.result.tools[5].name,
     );
 }
 
