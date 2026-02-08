@@ -289,24 +289,18 @@ Tool management commands (`register`, `update`, `remove`) automatically regenera
 
 | Feature | Description |
 |---------|-------------|
-| **Capability-based security** | Cryptographic Ed25519 tokens, not passwords |
-| **End-to-end encryption** | X25519 + XChaCha20-Poly1305 with forward secrecy |
 | **Fine-grained access** | Grant specific paths and tools, not "everything" |
 | **Custom tool proxy** | Register any CLI tool, invoke remotely with argument validation |
+| **Git operations** | Three-tier git access: read-only, write, full (push/pull) |
 | **Token revocation** | Revoke tokens before expiry, resource-side enforcement |
 | **Time-bounded tokens** | 1h, 24h, 7d - you choose |
 | **Persistent audit trail** | Every operation logged to `~/.clawgate/logs/audit.log` |
 | **Issuance tracking** | Every granted token recorded for audit and bulk revocation |
-| **Forbidden paths** | `~/.ssh`, `~/.aws`, `~/.gnupg` can NEVER be granted |
-| **Git operations** | Three-tier git access: read-only, write, full (push/pull) |
-| **Git command allowlists** | Defense-in-depth with blocked flags and subcommands |
-| **Argument safety** | Per-tool allowlist/denylist, no shell execution |
 | **Skill generation** | Auto-generated agent-readable docs from tool registry |
 | **Large file handling** | Files >512KB automatically truncated with metadata |
 | 🦞 **OpenClaw native** | Skill file included |
-| **Symlink protection** | Symlinks rejected to prevent scope escape attacks |
 | **Fast** | Pure Zig, zero dependencies, minimal latency |
-| **Zero trust design** | Assumes agent machine is compromised |
+| **Defense-in-depth security** | 14 layers — see [Security](#security) below |
 
 ## Security
 
