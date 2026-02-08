@@ -1,125 +1,77 @@
-# ClawGate v0.3.0 Release Notes
+# ClawGate v0.3.1 Release Notes
 
-This release extends ClawGate beyond file and git access. You can now
-register **custom CLI tools** on your primary machine and invoke them
-from isolated agents through the same zero-trust pipeline: capability
-tokens, argument validation, output truncation, audit logging, and
-E2E encryption.
+This release adds **tokenless tool discovery** via `tool remote-list`,
+letting agents discover all registered tools without requiring any
+capability token or grant. It also improves audit logging for
+discovery requests and adds security hardening tests for the
+tokenless IPC path.
 
-Also new: **token revocation**, **issuance tracking**, and **skill
-file generation**.
+## Tokenless Tool Discovery
 
-## Custom Tools
-
-Register any CLI tool on the resource machine and grant agents access
-to invoke it remotely:
-
-```bash
-# Register a tool (primary machine)
-clawgate tool register calc \
-  --command "bc -l" \
-  --allow-args "-q" \
-  --timeout 10 \
-  --description "Calculator (bc)"
-
-# Grant access
-clawgate grant --tool calc --ttl 4h
-
-# Invoke from agent
-echo "2+2" | clawgate tool calc
-```
-
-### Security
-
-- **Argument validation**: allowlist mode (only listed flags pass) or
-  passthrough mode (all flags except denied ones pass)
-- **No shell execution**: commands run via direct argv, never through
-  a shell
-- **Output truncation**: configurable per-tool output limit
-- **Per-tool capability**: tokens grant access to specific tools only
-
-### Management
+`clawgate tool remote-list` no longer requires a capability token.
+The command is purely metadata — it returns tool names and
+descriptions, never executes anything. The resource daemon returns
+all registered tools unconditionally.
 
 ```bash
-clawgate tool ls                     # List tools
-clawgate tool info calc              # Show details
-clawgate tool update calc --timeout 30
-clawgate tool remove calc
-clawgate tool test calc -q           # Test locally (no daemon)
+# No grant needed — just run it
+clawgate tool remote-list
 ```
 
-## Token Revocation
-
-Revoke tokens before they expire. The revocation list is checked on
-every request by the resource daemon.
-
-```bash
-clawgate revoke cg_abc123... --reason "compromised"
-clawgate revoke --all --reason "key rotation"
-clawgate revoked ls
-clawgate revoked clean               # Remove expired entries
+```
+calc    Calculator (bc)
+catnum  Cat with line numbers
 ```
 
-A revoked token returns `TOKEN_REVOKED`. The agent daemon automatically
-removes rejected tokens from its local store.
+**Why:** Tool discovery is a read-only metadata operation. Requiring
+a token with `--tool` scope created friction and broke the common
+case where agents have `--read` or `--git` tokens but want to see
+what tools are available.
 
-## Issuance Tracking
+### How It Works
 
-Every token created by `clawgate grant` is recorded in
-`~/.clawgate/issued.json`. This enables bulk revocation (`--all`) and
-provides an audit trail of granted access.
+1. CLI sends a tokenless `{"op":"tool_list","params":{}}` via IPC
+2. Agent daemon detects the tokenless request and forwards it to
+   the resource daemon over the E2E encrypted TCP connection
+3. Resource daemon intercepts the tokenless `tool_list` request
+   before token validation and returns all registered tools
+4. Actual tool **invocation** still requires a properly scoped token
 
-## Skill File Generation
+### MCP Integration
 
-Generate markdown skill files from the tool registry, making tools
-discoverable by AI agents:
+The `clawgate_tool_list` MCP tool also works without tokens — it
+uses the same tokenless discovery path.
 
-```bash
-clawgate skills generate             # Generate to skills/clawgate/
-clawgate skills export /path/to/dir
+## Audit Log Improvements
+
+Discovery requests now produce clean audit entries:
+
+```
+2026-02-08T12:00:00Z AUDIT req=discovery op=tool_list path=- success=true
 ```
 
-## Grant Enhancements
+Previously, tokenless requests produced `req=unknown op=unknown
+path=unknown` because the audit logger tried to parse the tokenless
+JSON as a standard request.
 
-- `--tool <name>` flag (repeatable) grants access to specific tools
-- `--tools-all` grants access to all registered tools
-- Path argument is now optional for tool-only tokens
-- Combined tokens: `clawgate grant --read --tool calc /path/**`
+## Security Hardening
 
-## MCP Integration
+Added 8 integration tests verifying that the tokenless IPC path
+cannot be exploited:
 
-New `clawgate_tool` MCP tool (6th tool) for invoking registered tools
-via JSON-RPC.
-
-## New Files
-
-| File | Purpose |
-|------|---------|
-| `src/resource/revocation.zig` | Revocation list management |
-| `src/resource/issuance.zig` | Issuance tracking |
-| `src/resource/tools.zig` | Tool registry (CRUD + persistence) |
-| `src/resource/tool_exec.zig` | Tool execution engine |
-| `src/resource/skills.zig` | Skill file generation |
-| `src/cli/revoke.zig` | `revoke` / `revoked` CLI |
-| `src/cli/tool_cmd.zig` | `tool` management + invocation CLI |
-| `src/cli/skills_cmd.zig` | `skills` generate/export CLI |
+- Tokenless `read`, `write`, `git`, `tool`, `list`, `stat` requests
+  are all rejected with "Token required"
+- Empty tokenless requests are rejected
+- `tool_list` responses cannot leak file contents
 
 ## Modified Files
 
 | File | Changes |
 |------|---------|
-| `src/protocol/json.zig` | `"tool"` op, `ToolResult`, new params |
-| `src/resource/handlers.zig` | Revocation check, tool routing |
-| `src/resource/daemon.zig` | Loads registry + revocation list |
-| `src/resource/audit_log.zig` | Logs tool name for tool operations |
-| `src/cli/grant.zig` | `--tool`, `--tools-all`, issuance log |
-| `src/agent/mcp.zig` | `clawgate_tool` MCP tool |
-| `src/main.zig` | v0.3.0, new command routing |
-
-## Documentation
-
-- New: `docs/TOOL-GUIDE.md` - Practical guide for custom tools
-- New: `docs/README.md` - Documentation index
-- Updated: `docs/OPENCLAW-QUICK-SETUP.md` - Added git access, skill
-  file setup, chat-based token workflow
-- Updated: `README.md` - Guides/Reference doc sections
+| `src/resource/handlers.zig` | Tokenless `tool_list` interception before `parseRequest` |
+| `src/resource/audit_log.zig` | Proper audit entries for tokenless discovery |
+| `src/agent/daemon.zig` | Tokenless IPC detection, simplified `handleToolListDiscovery` |
+| `src/agent/mcp.zig` | Tokenless `clawgate_tool_list` MCP tool |
+| `src/cli/tool_cmd.zig` | Tokenless `handleRemoteList` |
+| `docs/TOOL-GUIDE.md` | Updated discovery docs (no token required) |
+| `testing/test_tools.sh` | New tokenless security tests |

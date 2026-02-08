@@ -12,6 +12,7 @@ This guide walks you through integrating your first tool from scratch.
 - [Your First Tool: Calculator](#your-first-tool-calculator)
 - [Troubleshooting](#troubleshooting)
 - [Going Further](#going-further)
+- [Remote Tool Discovery](#remote-tool-discovery)
 - [Command Reference](#command-reference)
 - [Token Revocation](#token-revocation)
 
@@ -250,6 +251,7 @@ Stop both daemons with `Ctrl+C` in their respective terminals.
 | `Error: HOME not set` | `$HOME` not in environment | `export HOME=/home/youruser` |
 | `TOKEN_REVOKED` | Token was revoked | Grant and add a new token |
 | `TOKEN_EXPIRED` | Token TTL elapsed | Grant and add a new token |
+| `TOOL_DENIED` | No tool registry or no tools matched | Grant a token with `--tool` or `--tools-all` |
 
 **Daemon startup order**: Start the agent daemon first, then the
 resource daemon. The resource daemon connects to the agent, not the
@@ -435,6 +437,31 @@ clawgate skills export /path/to/output
 
 ---
 
+## Remote Tool Discovery
+
+Agents can discover what tools are available without knowing names in
+advance:
+
+**[agent]**
+```bash
+clawgate tool remote-list
+```
+
+Expected output:
+
+```
+calc    Calculator (bc)
+mygrep  Safe grep
+```
+
+This is a discovery command - it shows all registered tools regardless
+of token scope. No token or grant is required. The agent daemon
+forwards the request to the resource daemon, which returns every
+tool in the registry unconditionally. Actual tool invocation still
+requires a properly scoped token.
+
+---
+
 ## Command Reference
 
 ### Tool Management (primary machine)
@@ -470,6 +497,7 @@ clawgate skills export /path/to/output
 
 | Command | Purpose |
 |---------|---------|
+| `clawgate tool remote-list` | List tools available via daemon |
 | `clawgate tool <name> [args]` | Invoke tool via daemon |
 | `echo "data" \| clawgate tool <name>` | Invoke tool with stdin |
 

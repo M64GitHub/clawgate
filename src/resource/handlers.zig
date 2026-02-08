@@ -83,6 +83,26 @@ pub fn handleRequestFull(
     rev_list: ?*const revocation.RevocationList,
     tool_registry: ?*const tools_mod.ToolRegistry,
 ) HandlerError![]const u8 {
+    // Tokenless tool_list: return all registered tools
+    // unconditionally. This is metadata-only (names +
+    // descriptions), safe without authentication.
+    if (std.mem.indexOf(
+        u8,
+        request_json,
+        "\"token\":",
+    ) == null) {
+        if (std.mem.indexOf(
+            u8,
+            request_json,
+            "\"tool_list\"",
+        ) != null) {
+            return handleToolListAll(
+                allocator,
+                tool_registry,
+            );
+        }
+    }
+
     var parsed_req = protocol.parseRequest(
         allocator,
         request_json,
@@ -187,6 +207,15 @@ pub fn handleRequestFull(
         return handleToolRequest(
             allocator,
             io,
+            req,
+            &tok,
+            tool_registry,
+        );
+    }
+
+    if (std.mem.eql(u8, req.op, "tool_list")) {
+        return handleToolListRequest(
+            allocator,
             req,
             &tok,
             tool_registry,
@@ -608,6 +637,113 @@ fn handleToolRequest(
             .truncated = result.truncated,
         },
     }) catch return HandlerError.OutOfMemory;
+}
+
+/// Handles a tool list discovery request.
+/// Returns only the tools the token is authorized to invoke.
+fn handleToolListRequest(
+    allocator: Allocator,
+    req: protocol.Request,
+    tok: *const token_mod.Token,
+    registry: ?*const tools_mod.ToolRegistry,
+) HandlerError![]const u8 {
+    const reg = registry orelse {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.TOOL_DENIED,
+            "No tool registry",
+        ) catch return HandlerError.OutOfMemory;
+    };
+
+    const names = reg.listNames(allocator) catch {
+        return protocol.formatError(
+            allocator,
+            req.id,
+            ErrorCode.INTERNAL_ERROR,
+            "Failed to list tools",
+        ) catch return HandlerError.OutOfMemory;
+    };
+    defer allocator.free(names);
+
+    var entries: std.ArrayListUnmanaged(
+        protocol.ToolListEntry,
+    ) = .empty;
+    defer entries.deinit(allocator);
+
+    for (names) |name| {
+        if (!tok.allows("tools", "invoke", name)) continue;
+
+        const config = reg.get(name) orelse continue;
+
+        entries.append(allocator, .{
+            .name = name,
+            .description = config.description,
+            .arg_mode = switch (config.arg_mode) {
+                .allowlist => "allowlist",
+                .passthrough => "passthrough",
+            },
+            .allow_args = config.allow_args,
+            .examples = config.examples,
+        }) catch return HandlerError.OutOfMemory;
+    }
+
+    return protocol.formatSuccess(allocator, req.id, .{
+        .tool_list = .{ .tools = entries.items },
+    }) catch return HandlerError.OutOfMemory;
+}
+
+/// Returns ALL registered tools unconditionally. Used for
+/// tokenless discovery — metadata only, no execution.
+fn handleToolListAll(
+    allocator: Allocator,
+    registry: ?*const tools_mod.ToolRegistry,
+) HandlerError![]const u8 {
+    const reg = registry orelse {
+        return protocol.formatSuccess(
+            allocator,
+            "discovery",
+            .{
+                .tool_list = .{
+                    .tools = &[_]protocol.ToolListEntry{},
+                },
+            },
+        ) catch return HandlerError.OutOfMemory;
+    };
+
+    const names = reg.listNames(allocator) catch {
+        return HandlerError.OutOfMemory;
+    };
+    defer allocator.free(names);
+
+    var entries: std.ArrayListUnmanaged(
+        protocol.ToolListEntry,
+    ) = .empty;
+    defer entries.deinit(allocator);
+
+    for (names) |name| {
+        const config = reg.get(name) orelse continue;
+        entries.append(allocator, .{
+            .name = name,
+            .description = config.description,
+            .arg_mode = switch (config.arg_mode) {
+                .allowlist => "allowlist",
+                .passthrough => "passthrough",
+            },
+            .allow_args = config.allow_args,
+            .examples = config.examples,
+        }) catch return HandlerError.OutOfMemory;
+    }
+
+    return protocol.formatSuccess(
+        allocator,
+        "discovery",
+        .{
+            .tool_list = .{
+                .tools = entries.items,
+            },
+        },
+    ) catch return HandlerError.OutOfMemory;
 }
 
 /// Forbidden directory components. If any path component exactly matches
@@ -1213,5 +1349,278 @@ test "isForbiddenPath - component-aware matching" {
     );
     try std.testing.expect(
         !isForbiddenPath("/app/not.env/file"),
+    );
+}
+
+test "handle tool_list returns authorized tools only" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(
+        allocator,
+        .{ .environ = .empty },
+    );
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Create tool registry in tmpdir with 3 tools
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = std.Io.Dir.realPathFileAlloc(
+        tmp.dir,
+        io,
+        ".",
+        allocator,
+    ) catch unreachable;
+    defer allocator.free(tmp_path);
+
+    var reg = tools_mod.ToolRegistry.load(
+        allocator,
+        io,
+        tmp_path,
+    ) catch unreachable;
+    defer reg.deinit(allocator);
+
+    const tool_cfg = tools_mod.ToolConfig{
+        .command = "bc -l",
+        .allow_args = &[_][]const u8{"-q"},
+        .deny_args = &[_][]const u8{},
+        .arg_mode = .allowlist,
+        .scope = null,
+        .timeout_seconds = 10,
+        .max_output_bytes = 65536,
+        .description = "Calculator",
+        .examples = &[_][]const u8{},
+        .created = "2026-01-01T00:00:00Z",
+    };
+
+    reg.register(allocator, io, "calc", tool_cfg) catch
+        unreachable;
+    reg.register(allocator, io, "grep", .{
+        .command = "grep",
+        .allow_args = &[_][]const u8{},
+        .deny_args = &[_][]const u8{},
+        .arg_mode = .passthrough,
+        .scope = null,
+        .timeout_seconds = 10,
+        .max_output_bytes = 65536,
+        .description = "Safe grep",
+        .examples = &[_][]const u8{},
+        .created = "2026-01-01T00:00:00Z",
+    }) catch unreachable;
+    reg.register(allocator, io, "wc", .{
+        .command = "wc",
+        .allow_args = &[_][]const u8{},
+        .deny_args = &[_][]const u8{},
+        .arg_mode = .allowlist,
+        .scope = null,
+        .timeout_seconds = 10,
+        .max_output_bytes = 65536,
+        .description = "Word count",
+        .examples = &[_][]const u8{},
+        .created = "2026-01-01T00:00:00Z",
+    }) catch unreachable;
+
+    // Token only grants access to "calc"
+    const kp = crypto.generateKeypair(io);
+    const tok = try token_mod.createToken(
+        allocator,
+        io,
+        kp.secret_key,
+        "issuer",
+        "subject",
+        &[_]token_mod.Capability{.{
+            .r = "tools",
+            .o = &[_][]const u8{"invoke"},
+            .s = "calc",
+        }},
+        3600,
+    );
+    defer allocator.free(tok);
+
+    var req_buf: [2048]u8 = undefined;
+    const req_json = std.fmt.bufPrint(
+        &req_buf,
+        "{{\"id\":\"tl1\",\"token\":\"{s}\"," ++
+            "\"op\":\"tool_list\",\"params\":{{}}}}",
+        .{tok},
+    ) catch unreachable;
+
+    const response = try handleRequestFull(
+        allocator,
+        io,
+        req_json,
+        kp.public_key,
+        .{},
+        null,
+        &reg,
+    );
+    defer allocator.free(response);
+
+    // Should succeed
+    try std.testing.expect(
+        std.mem.indexOf(u8, response, "\"ok\":true") != null,
+    );
+    // Should contain calc
+    try std.testing.expect(
+        std.mem.indexOf(u8, response, "\"calc\"") != null,
+    );
+    // Should NOT contain grep or wc
+    try std.testing.expect(
+        std.mem.indexOf(u8, response, "\"grep\"") == null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, response, "\"wc\"") == null,
+    );
+}
+
+test "handle tool_list with wildcard scope returns all" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(
+        allocator,
+        .{ .environ = .empty },
+    );
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = std.Io.Dir.realPathFileAlloc(
+        tmp.dir,
+        io,
+        ".",
+        allocator,
+    ) catch unreachable;
+    defer allocator.free(tmp_path);
+
+    var reg = tools_mod.ToolRegistry.load(
+        allocator,
+        io,
+        tmp_path,
+    ) catch unreachable;
+    defer reg.deinit(allocator);
+
+    reg.register(allocator, io, "calc", .{
+        .command = "bc",
+        .allow_args = &[_][]const u8{},
+        .deny_args = &[_][]const u8{},
+        .arg_mode = .allowlist,
+        .scope = null,
+        .timeout_seconds = 10,
+        .max_output_bytes = 65536,
+        .description = "Calculator",
+        .examples = &[_][]const u8{},
+        .created = "2026-01-01T00:00:00Z",
+    }) catch unreachable;
+    reg.register(allocator, io, "wc", .{
+        .command = "wc",
+        .allow_args = &[_][]const u8{},
+        .deny_args = &[_][]const u8{},
+        .arg_mode = .allowlist,
+        .scope = null,
+        .timeout_seconds = 10,
+        .max_output_bytes = 65536,
+        .description = "Word count",
+        .examples = &[_][]const u8{},
+        .created = "2026-01-01T00:00:00Z",
+    }) catch unreachable;
+
+    // Token with wildcard scope "*" covers all tools
+    // (bare tool names match "*" not "/**")
+    const kp = crypto.generateKeypair(io);
+    const tok = try token_mod.createToken(
+        allocator,
+        io,
+        kp.secret_key,
+        "issuer",
+        "subject",
+        &[_]token_mod.Capability{.{
+            .r = "tools",
+            .o = &[_][]const u8{"invoke"},
+            .s = "*",
+        }},
+        3600,
+    );
+    defer allocator.free(tok);
+
+    var req_buf: [2048]u8 = undefined;
+    const req_json = std.fmt.bufPrint(
+        &req_buf,
+        "{{\"id\":\"tl2\",\"token\":\"{s}\"," ++
+            "\"op\":\"tool_list\",\"params\":{{}}}}",
+        .{tok},
+    ) catch unreachable;
+
+    const response = try handleRequestFull(
+        allocator,
+        io,
+        req_json,
+        kp.public_key,
+        .{},
+        null,
+        &reg,
+    );
+    defer allocator.free(response);
+
+    try std.testing.expect(
+        std.mem.indexOf(u8, response, "\"ok\":true") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, response, "\"calc\"") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, response, "\"wc\"") != null,
+    );
+}
+
+test "handle tool_list with no registry returns TOOL_DENIED" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(
+        allocator,
+        .{ .environ = .empty },
+    );
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const kp = crypto.generateKeypair(io);
+    const tok = try token_mod.createToken(
+        allocator,
+        io,
+        kp.secret_key,
+        "issuer",
+        "subject",
+        &[_]token_mod.Capability{.{
+            .r = "tools",
+            .o = &[_][]const u8{"invoke"},
+            .s = "*",
+        }},
+        3600,
+    );
+    defer allocator.free(tok);
+
+    var req_buf: [2048]u8 = undefined;
+    const req_json = std.fmt.bufPrint(
+        &req_buf,
+        "{{\"id\":\"tl3\",\"token\":\"{s}\"," ++
+            "\"op\":\"tool_list\",\"params\":{{}}}}",
+        .{tok},
+    ) catch unreachable;
+
+    const response = try handleRequestFull(
+        allocator,
+        io,
+        req_json,
+        kp.public_key,
+        .{},
+        null,
+        null,
+    );
+    defer allocator.free(response);
+
+    try std.testing.expect(
+        std.mem.indexOf(u8, response, "\"ok\":false") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, response, "TOOL_DENIED") != null,
     );
 }

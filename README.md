@@ -1,6 +1,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.16+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
-[![Version](https://img.shields.io/badge/version-0.3.0-green.svg)](https://github.com/M64GitHub/clawgate/releases)
+[![Version](https://img.shields.io/badge/version-0.3.1-green.svg)](https://github.com/M64GitHub/clawgate/releases)
 [![GitHub Release](https://img.shields.io/github/v/release/M64GitHub/clawgate)](https://github.com/M64GitHub/clawgate/releases/latest)
 
 # ClawGate
@@ -103,6 +103,7 @@ clawgate ls ~/projects/app/src/
 clawgate write ~/projects/app/notes.md --content "TODO: refactor"
 clawgate git ~/projects/app status
 clawgate git ~/projects/app diff HEAD~3
+clawgate tool remote-list                   # Discover available tools
 clawgate tool calc                          # Invoke registered tools
 echo "2+2" | clawgate tool calc             # With stdin
 ```
@@ -192,6 +193,7 @@ clawgate tool info calc              # Show tool details
 clawgate tool update calc --timeout 30
 clawgate tool remove calc
 clawgate tool test calc -q           # Test locally (no daemon needed)
+clawgate tool remote-list            # Discover tools via daemon
 ```
 
 ### Token Revocation
@@ -308,6 +310,7 @@ The resource daemon connects to the agent daemon over TCP (`:53280`). All reques
 | **Time-bounded tokens** | 1h, 24h, 7d - you choose |
 | **Persistent audit trail** | Every operation logged to `~/.clawgate/logs/audit.log` |
 | **Issuance tracking** | Every granted token recorded for audit and bulk revocation |
+| **Tool discovery** | Agent can list available tools via daemon |
 | **Skill generation** | Auto-generated agent-readable docs from tool registry |
 | **Large file handling** | Files >512KB automatically truncated with metadata |
 | 🦞 **OpenClaw native** | Skill file included |
@@ -404,6 +407,9 @@ File Operations (agent machine):
   clawgate write <path>             Write file (stdin or --content)
   clawgate stat <path>              Get file info
   clawgate git <repo> <args...>     Run git command
+
+CLI / Tool Operations (agent machine):
+  clawgate tool remote-list         Discover tools via daemon
   clawgate tool <name> [args...]    Invoke a registered tool
 
 Monitoring:

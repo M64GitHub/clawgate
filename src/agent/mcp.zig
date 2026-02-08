@@ -199,7 +199,7 @@ fn handleInitialize(allocator: Allocator, id: ?std.json.Value) ![]const u8 {
     try writer.writeAll("\"capabilities\":{\"tools\":{}},");
     try writer.writeAll("\"serverInfo\":{");
     try writer.writeAll("\"name\":\"clawgate\",");
-    try writer.writeAll("\"version\":\"0.3.0\"");
+    try writer.writeAll("\"version\":\"0.3.1\"");
     try writer.writeAll("}}}");
 
     const result = output.written();
@@ -310,6 +310,22 @@ fn handleToolsList(allocator: Allocator, id: ?std.json.Value) ![]const u8 {
     );
     try writer.writeAll("},\"required\":[\"tool\"]}}");
 
+    try writer.writeAll(",");
+
+    // clawgate_tool_list
+    try writer.writeAll(
+        "{\"name\":\"clawgate_tool_list\",",
+    );
+    try writer.writeAll("\"description\":");
+    try writer.writeAll(
+        "\"List available tools on the " ++
+            "primary machine\",",
+    );
+    try writer.writeAll(
+        "\"inputSchema\":{\"type\":\"object\"," ++
+            "\"properties\":{}}}",
+    );
+
     try writer.writeAll("]}}");
 
     const result = output.written();
@@ -381,7 +397,7 @@ fn handleToolsCall(
         ),
     };
 
-    // Handle clawgate_tool before path extraction (no path needed)
+    // Handle tools that don't need a path parameter
     if (std.mem.eql(u8, name, "clawgate_tool")) {
         return executeToolCall(
             allocator,
@@ -389,6 +405,13 @@ fn handleToolsCall(
             id,
             args,
             store,
+        );
+    }
+    if (std.mem.eql(u8, name, "clawgate_tool_list")) {
+        return executeToolList(
+            allocator,
+            environ,
+            id,
         );
     }
 
@@ -1110,6 +1133,137 @@ fn executeToolCall(
     return formatToolResult(allocator, id, "");
 }
 
+/// Executes clawgate_tool_list.
+fn executeToolList(
+    allocator: Allocator,
+    environ: std.process.Environ,
+    id: ?std.json.Value,
+) ![]const u8 {
+    // Tokenless request — daemon handles token lookup
+    const response = sendToolListRequest(
+        allocator,
+        environ,
+    ) catch |err| {
+        return mapConnectionError(allocator, id, err);
+    };
+    defer allocator.free(response);
+
+    // Parse response
+    const parsed = std.json.parseFromSlice(
+        struct {
+            ok: bool,
+            result: ?struct {
+                tools: []const struct {
+                    name: []const u8,
+                    description: []const u8,
+                },
+            } = null,
+            @"error": ?struct {
+                code: []const u8,
+                message: []const u8,
+            } = null,
+        },
+        allocator,
+        response,
+        .{ .ignore_unknown_fields = true },
+    ) catch {
+        return formatError(
+            allocator,
+            id,
+            McpError.INTERNAL_ERROR,
+            "Invalid response from daemon",
+        );
+    };
+    defer parsed.deinit();
+
+    if (!parsed.value.ok) {
+        if (parsed.value.@"error") |e| {
+            return formatError(
+                allocator,
+                id,
+                mapProtocolError(e.code),
+                e.message,
+            );
+        }
+        return formatError(
+            allocator,
+            id,
+            McpError.INTERNAL_ERROR,
+            "Unknown error",
+        );
+    }
+
+    if (parsed.value.result) |result| {
+        var output: std.Io.Writer.Allocating = .init(
+            allocator,
+        );
+        errdefer output.deinit();
+        const writer = &output.writer;
+
+        if (result.tools.len == 0) {
+            try writer.writeAll("No tools available");
+        } else {
+            for (result.tools, 0..) |tool, idx| {
+                if (idx > 0) try writer.writeByte('\n');
+                try writer.writeAll(tool.name);
+                try writer.writeByte('\t');
+                try writer.writeAll(tool.description);
+            }
+        }
+
+        const text = output.written();
+        const text_copy = try allocator.dupe(
+            u8,
+            text,
+        );
+        defer allocator.free(text_copy);
+        output.deinit();
+
+        return formatToolResult(
+            allocator,
+            id,
+            text_copy,
+        );
+    }
+
+    return formatToolResult(
+        allocator,
+        id,
+        "No tools available",
+    );
+}
+
+/// Sends a tool_list request via IPC.
+fn sendToolListRequest(
+    allocator: Allocator,
+    environ: std.process.Environ,
+) ![]const u8 {
+    // Tokenless request — daemon handles token lookup
+    const request =
+        "{\"op\":\"tool_list\",\"params\":{}}";
+
+    const response_data = ipc_client.sendRequest(
+        allocator,
+        environ,
+        request,
+    ) catch |err| {
+        return switch (err) {
+            ipc_client.IpcError.DaemonNotRunning => {
+                return error.NotConnected;
+            },
+            ipc_client.IpcError.ConnectionFailed => {
+                return error.ConnectionClosed;
+            },
+            ipc_client.IpcError.OutOfMemory => {
+                return error.OutOfMemory;
+            },
+            else => error.ConnectionError,
+        };
+    };
+
+    return response_data;
+}
+
 /// Sends a tool request via IPC to the agent daemon.
 fn sendToolRequest(
     allocator: Allocator,
@@ -1680,7 +1834,7 @@ test "handleInitialize returns capabilities" {
     try std.testing.expectEqualStrings("2.0", parsed.value.jsonrpc);
     const info = parsed.value.result.serverInfo;
     try std.testing.expectEqualStrings("clawgate", info.name);
-    try std.testing.expectEqualStrings("0.3.0", info.version);
+    try std.testing.expectEqualStrings("0.3.1", info.version);
 }
 
 test "handleToolsList returns all tools" {
@@ -1705,7 +1859,7 @@ test "handleToolsList returns all tools" {
     );
     defer parsed.deinit();
 
-    try std.testing.expectEqual(@as(usize, 6), parsed.value.result.tools.len);
+    try std.testing.expectEqual(@as(usize, 7), parsed.value.result.tools.len);
     try std.testing.expectEqualStrings(
         "clawgate_read_file",
         parsed.value.result.tools[0].name,
@@ -1729,6 +1883,10 @@ test "handleToolsList returns all tools" {
     try std.testing.expectEqualStrings(
         "clawgate_tool",
         parsed.value.result.tools[5].name,
+    );
+    try std.testing.expectEqualStrings(
+        "clawgate_tool_list",
+        parsed.value.result.tools[6].name,
     );
 }
 

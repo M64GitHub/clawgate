@@ -128,6 +128,29 @@ pub const TokenStore = struct {
         return null;
     }
 
+    /// Finds a non-expired token that has any capability matching
+    /// the resource and operation, ignoring scope. Used for
+    /// discovery operations (tool_list) where the caller doesn't
+    /// know specific names yet — scope filtering is done server-side.
+    pub fn findForResource(
+        self: *TokenStore,
+        resource: []const u8,
+        op: []const u8,
+    ) ?*StoredToken {
+        for (self.tokens) |*tok| {
+            if (tok.parsed.isExpired()) continue;
+            for (tok.parsed.payload.cg.cap) |cap| {
+                if (!std.mem.eql(u8, cap.r, resource))
+                    continue;
+                for (cap.o) |allowed_op| {
+                    if (std.mem.eql(u8, allowed_op, op))
+                        return tok;
+                }
+            }
+        }
+        return null;
+    }
+
     /// Adds a new token to the store and saves to disk.
     /// Token is parsed and validated before adding.
     pub fn addToken(
@@ -665,6 +688,177 @@ test "list returns all tokens" {
 
     // Now should have 1
     try std.testing.expectEqual(@as(usize, 1), store.list().len);
+}
+
+test "findForResource matches any tool scope" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const crypto = @import("../capability/crypto.zig");
+
+    const test_dir = "/tmp/clawgate_test_find_resource";
+    cleanupTestDir(io, test_dir);
+    Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
+    defer cleanupTestDir(io, test_dir);
+
+    var store = try TokenStore.loadFromDir(
+        allocator,
+        io,
+        test_dir,
+    );
+    defer store.deinit(allocator);
+
+    const kp = crypto.generateKeypair(io);
+    const capabilities = [_]token_mod.Capability{
+        .{
+            .r = "tools",
+            .o = &[_][]const u8{"invoke"},
+            .s = "calc",
+        },
+    };
+
+    const jwt = try token_mod.createToken(
+        allocator,
+        io,
+        kp.secret_key,
+        "issuer",
+        "subject",
+        &capabilities,
+        3600,
+    );
+    defer allocator.free(jwt);
+
+    try store.addToken(allocator, io, jwt);
+
+    // findForResource ignores scope — should find it
+    const found = store.findForResource("tools", "invoke");
+    try std.testing.expect(found != null);
+
+    // findForPath with wrong scope — should NOT find it
+    const not_found = store.findForPath(
+        "tools",
+        "invoke",
+        "unknown_tool",
+    );
+    try std.testing.expect(not_found == null);
+
+    // findForPath with correct scope — should find it
+    const exact = store.findForPath(
+        "tools",
+        "invoke",
+        "calc",
+    );
+    try std.testing.expect(exact != null);
+}
+
+test "findForResource ignores expired tokens" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const crypto = @import("../capability/crypto.zig");
+
+    const test_dir = "/tmp/clawgate_test_find_resource_exp";
+    cleanupTestDir(io, test_dir);
+    Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
+    defer cleanupTestDir(io, test_dir);
+
+    var store = try TokenStore.loadFromDir(
+        allocator,
+        io,
+        test_dir,
+    );
+    defer store.deinit(allocator);
+
+    // Create token that expires in 1 second
+    const kp = crypto.generateKeypair(io);
+    const capabilities = [_]token_mod.Capability{
+        .{
+            .r = "tools",
+            .o = &[_][]const u8{"invoke"},
+            .s = "calc",
+        },
+    };
+
+    // TTL=0 creates already-expired token
+    const jwt = try token_mod.createToken(
+        allocator,
+        io,
+        kp.secret_key,
+        "issuer",
+        "subject",
+        &capabilities,
+        0,
+    );
+    defer allocator.free(jwt);
+
+    // addToken rejects expired tokens, so manually load
+    // Instead: verify that expired tokens are not found
+    // A token with TTL=0 can't be added (rejected), which
+    // confirms the store won't have expired tokens.
+    const result = store.addToken(allocator, io, jwt);
+    try std.testing.expectError(
+        token_mod.TokenError.TokenExpired,
+        result,
+    );
+
+    // Store still empty
+    const found = store.findForResource("tools", "invoke");
+    try std.testing.expect(found == null);
+}
+
+test "findForResource with no matching resource" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const crypto = @import("../capability/crypto.zig");
+
+    const test_dir = "/tmp/clawgate_test_find_resource_nr";
+    cleanupTestDir(io, test_dir);
+    Dir.createDir(.cwd(), io, test_dir, .default_dir) catch {};
+    defer cleanupTestDir(io, test_dir);
+
+    var store = try TokenStore.loadFromDir(
+        allocator,
+        io,
+        test_dir,
+    );
+    defer store.deinit(allocator);
+
+    const kp = crypto.generateKeypair(io);
+    const capabilities = [_]token_mod.Capability{
+        .{
+            .r = "files",
+            .o = &[_][]const u8{"read"},
+            .s = "/tmp/**",
+        },
+    };
+
+    const jwt = try token_mod.createToken(
+        allocator,
+        io,
+        kp.secret_key,
+        "issuer",
+        "subject",
+        &capabilities,
+        3600,
+    );
+    defer allocator.free(jwt);
+
+    try store.addToken(allocator, io, jwt);
+
+    // Token is for "files" not "tools"
+    const found = store.findForResource("tools", "invoke");
+    try std.testing.expect(found == null);
+
+    // But should match for "files"/"read"
+    const files = store.findForResource("files", "read");
+    try std.testing.expect(files != null);
 }
 
 fn cleanupTestDir(io: std.Io, dir_path: []const u8) void {

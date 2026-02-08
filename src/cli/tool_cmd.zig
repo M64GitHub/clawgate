@@ -8,6 +8,9 @@
 //!   clawgate tool remove <name>
 //!   clawgate tool test <name> [args...]
 //!
+//! Remote Discovery (agent-side):
+//!   clawgate tool remote-list
+//!
 //! Invocation (agent-side):
 //!   clawgate tool <name> [args...]
 
@@ -32,9 +35,10 @@ pub const ToolCmdError = error{
 };
 
 const MANAGEMENT_SUBCMDS = [_][]const u8{
-    "register", "ls",     "list",     "info",
-    "update",   "remove", "test",     "--help",
-    "-h",       "help",   "generate",
+    "register",    "ls",     "list",   "info",
+    "update",      "remove", "test",   "--help",
+    "-h",          "help",   "generate",
+    "remote-list",
 };
 
 /// Main entry point for `clawgate tool` commands.
@@ -51,6 +55,16 @@ pub fn run(
     }
 
     const subcmd = args[0];
+
+    // remote-list needs environ for IPC (handleManagement
+    // doesn't receive it), so intercept here.
+    if (std.mem.eql(u8, subcmd, "remote-list")) {
+        return handleRemoteList(
+            allocator,
+            io,
+            environ,
+        );
+    }
 
     // Check if it's a management subcommand
     for (MANAGEMENT_SUBCMDS) |mgmt| {
@@ -816,6 +830,93 @@ fn handleGenerate(
     ) catch {};
 }
 
+/// Discover available tools on the resource daemon.
+/// Sends a tokenless request; the agent daemon handles
+/// token lookup and aggregation internally.
+fn handleRemoteList(
+    allocator: Allocator,
+    io: Io,
+    environ: std.process.Environ,
+) ToolCmdError!void {
+    const request =
+        "{\"op\":\"tool_list\",\"params\":{}}";
+
+    // Send via IPC — daemon handles token lookup
+    const response_data = ipc_client.sendRequest(
+        allocator,
+        environ,
+        request,
+    ) catch |err| {
+        std.debug.print(
+            "Error: Failed to connect to daemon:" ++
+                " {}\n",
+            .{err},
+        );
+        return ToolCmdError.ExecFailed;
+    };
+    defer allocator.free(response_data);
+
+    // Parse response
+    const parsed = std.json.parseFromSlice(
+        struct {
+            ok: bool,
+            result: ?struct {
+                tools: []const struct {
+                    name: []const u8,
+                    description: []const u8,
+                },
+            } = null,
+            @"error": ?struct {
+                code: []const u8,
+                message: []const u8,
+            } = null,
+        },
+        allocator,
+        response_data,
+        .{ .ignore_unknown_fields = true },
+    ) catch {
+        std.debug.print(
+            "Error: Invalid response\n",
+            .{},
+        );
+        return ToolCmdError.ExecFailed;
+    };
+    defer parsed.deinit();
+
+    if (!parsed.value.ok) {
+        if (parsed.value.@"error") |e| {
+            std.debug.print(
+                "Error: {s}: {s}\n",
+                .{ e.code, e.message },
+            );
+        }
+        return ToolCmdError.ExecFailed;
+    }
+
+    const stdout = File.stdout();
+    if (parsed.value.result) |result| {
+        if (result.tools.len == 0) {
+            stdout.writeStreamingAll(
+                io,
+                "No tools available\n",
+            ) catch {};
+            return;
+        }
+        for (result.tools) |tool| {
+            var buf: [256]u8 = undefined;
+            const line = std.fmt.bufPrint(
+                &buf,
+                "{s}\t{s}\n",
+                .{ tool.name, tool.description },
+            ) catch continue;
+            stdout.writeStreamingAll(
+                io,
+                line,
+            ) catch {};
+        }
+    }
+}
+
 fn printUsage() void {
     const usage =
         \\Usage: clawgate tool <subcommand|name> [args...]
@@ -835,6 +936,9 @@ fn printUsage() void {
         \\  remove <name>           Remove a tool
         \\  test <name> [args]      Test tool locally
         \\  generate                Generate skill files
+        \\
+        \\Remote Discovery (agent-side):
+        \\  remote-list             List tools via daemon
         \\
         \\Tool Invocation (agent-side):
         \\  <name> [args...]        Invoke tool via daemon

@@ -402,6 +402,8 @@ fn doTcpMonitor(
 
 /// Handles a single IPC request. Inspects responses for
 /// TOKEN_REVOKED and auto-removes the offending token.
+/// Tokenless tool_list requests are handled internally
+/// (discovery mode).
 fn handleIpcRequest(
     conn_alloc: Allocator,
     io: Io,
@@ -416,6 +418,38 @@ fn handleIpcRequest(
         return;
     };
     defer conn_alloc.free(request);
+
+    // Tokenless requests are handled internally
+    if (std.mem.indexOf(
+        u8,
+        request,
+        "\"token\":",
+    ) == null) {
+        if (std.mem.indexOf(
+            u8,
+            request,
+            "\"tool_list\"",
+        ) != null) {
+            handleToolListDiscovery(
+                conn_alloc,
+                io,
+                ipc_conn,
+                store,
+            );
+            return;
+        }
+        // Unknown tokenless request
+        const err_resp = std.fmt.allocPrint(
+            conn_alloc,
+            "{{\"ok\":false,\"error\":{{" ++
+                "\"code\":\"INVALID_REQUEST\"," ++
+                "\"message\":\"Token required\"}}}}",
+            .{},
+        ) catch return;
+        defer conn_alloc.free(err_resp);
+        ipc_conn.send(err_resp) catch {};
+        return;
+    }
 
     const response = sendRequest(
         conn_alloc,
@@ -461,6 +495,36 @@ fn handleIpcRequest(
             .{err},
         );
     };
+}
+
+/// Handles tokenless tool_list discovery. Forwards the
+/// raw request to the resource daemon which returns all
+/// registered tools unconditionally.
+fn handleToolListDiscovery(
+    allocator: Allocator,
+    _: Io,
+    ipc_conn: *unix.Connection,
+    _: *tokens.TokenStore,
+) void {
+    const request =
+        "{\"op\":\"tool_list\",\"params\":{}}";
+
+    const response = sendRequest(
+        allocator,
+        allocator,
+        request,
+    ) catch |err| {
+        const err_resp = buildErrorResponse(
+            allocator,
+            err,
+        ) catch return;
+        defer allocator.free(err_resp);
+        ipc_conn.send(err_resp) catch {};
+        return;
+    };
+    defer allocator.free(response);
+
+    ipc_conn.send(response) catch {};
 }
 
 /// Extracts the token value from a request JSON string.

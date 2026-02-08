@@ -64,6 +64,9 @@ assert_contains "$OUT" "clawgate_git"
 test_begin "tools/list includes tool tool"
 assert_contains "$OUT" "clawgate_tool"
 
+test_begin "tools/list includes tool_list tool"
+assert_contains "$OUT" "clawgate_tool_list"
+
 # -------------------------------------------------------
 # tools/call (needs running daemons for file access)
 # -------------------------------------------------------

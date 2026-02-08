@@ -249,6 +249,13 @@ pub fn grant(
     var caps_buf: [17]token.Capability = undefined;
     var caps_count: usize = 0;
 
+    // Track duped tool names (for --tools-all) so we can
+    // free them after the token is created.
+    var duped_names: [16][]const u8 = undefined;
+    var duped_count: usize = 0;
+    defer for (duped_names[0..duped_count]) |d|
+        allocator.free(d);
+
     // File capability (if path given and file ops requested)
     if (config.path != null and ops_count > 0) {
         caps_buf[caps_count] = .{
@@ -285,10 +292,17 @@ pub fn grant(
         const invoke_op = [_][]const u8{"invoke"};
         for (names) |name| {
             if (caps_count >= caps_buf.len) break;
+            // Dupe name so it survives reg.deinit()
+            const owned = allocator.dupe(
+                u8,
+                name,
+            ) catch return GrantError.OutOfMemory;
+            duped_names[duped_count] = owned;
+            duped_count += 1;
             caps_buf[caps_count] = .{
                 .r = "tools",
                 .o = &invoke_op,
-                .s = name,
+                .s = owned,
             };
             caps_count += 1;
         }

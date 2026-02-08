@@ -2,6 +2,68 @@
 
 ---
 
+## v0.3.0
+
+This release extends ClawGate beyond file and git access. You can now
+register **custom CLI tools** on your primary machine and invoke them
+from isolated agents through the same zero-trust pipeline: capability
+tokens, argument validation, output truncation, audit logging, and
+E2E encryption.
+
+Also new: **token revocation**, **issuance tracking**, and **skill
+file generation**.
+
+### Custom Tools
+
+Register any CLI tool on the resource machine and grant agents access
+to invoke it remotely:
+
+```bash
+# Register a tool (primary machine)
+clawgate tool register calc \
+  --command "bc -l" \
+  --allow-args "-q" \
+  --timeout 10 \
+  --description "Calculator (bc)"
+
+# Grant access
+clawgate grant --tool calc --ttl 4h
+
+# Invoke from agent
+echo "2+2" | clawgate tool calc
+```
+
+### Token Revocation
+
+```bash
+clawgate revoke cg_abc123... --reason "compromised"
+clawgate revoke --all --reason "key rotation"
+clawgate revoked ls
+clawgate revoked clean
+```
+
+### Grant Enhancements
+
+- `--tool <name>` flag (repeatable) grants access to specific tools
+- `--tools-all` grants access to all registered tools
+- Path argument is now optional for tool-only tokens
+- Combined tokens: `clawgate grant --read --tool calc /path/**`
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `src/resource/revocation.zig` | Revocation list management |
+| `src/resource/issuance.zig` | Issuance tracking |
+| `src/resource/tools.zig` | Tool registry (CRUD + persistence) |
+| `src/resource/tool_exec.zig` | Tool execution engine |
+| `src/resource/skills.zig` | Skill file generation |
+| `src/cli/revoke.zig` | `revoke` / `revoked` CLI |
+| `src/cli/tool_cmd.zig` | `tool` management + invocation CLI |
+| `src/cli/skills_cmd.zig` | `skills` generate/export CLI |
+
+---
+
 ## v0.2.3
 
 This release adds human-readable expiration dates to token management

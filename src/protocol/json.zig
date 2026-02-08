@@ -120,6 +120,26 @@ pub const ToolResult = struct {
     truncated: bool,
 };
 
+/// A single entry in a tool list response.
+pub const ToolListEntry = struct {
+    /// Tool name
+    name: []const u8,
+    /// Human-readable description
+    description: []const u8,
+    /// Argument validation mode
+    arg_mode: []const u8,
+    /// Allowed arguments (allowlist mode)
+    allow_args: []const []const u8,
+    /// Usage examples
+    examples: []const []const u8,
+};
+
+/// Result of a tool_list operation.
+pub const ToolListResult = struct {
+    /// Tools the token is authorized to invoke
+    tools: []const ToolListEntry,
+};
+
 /// Union of all possible result types.
 pub const Result = union(enum) {
     read: ReadResult,
@@ -128,6 +148,7 @@ pub const Result = union(enum) {
     stat: StatResult,
     git: GitResult,
     tool: ToolResult,
+    tool_list: ToolListResult,
 };
 
 /// Error details in a response.
@@ -162,7 +183,8 @@ pub const ParsedRequest = struct {
 
 /// Valid operations.
 const valid_operations = [_][]const u8{
-    "read", "write", "list", "stat", "git", "tool",
+    "read",  "write", "list", "stat",
+    "git",   "tool",  "tool_list",
 };
 
 /// Parses JSON bytes into a Request.
@@ -280,6 +302,37 @@ pub fn formatResponse(allocator: Allocator, response: Response) ![]const u8 {
                         if (t.truncated) "true" else "false",
                     },
                 );
+            },
+            .tool_list => |tl| {
+                try writer.writeAll("{\"tools\":[");
+                for (tl.tools, 0..) |tool, i| {
+                    if (i > 0) try writer.writeAll(",");
+                    try writer.writeAll("{\"name\":\"");
+                    try writeJsonEscaped(writer, tool.name);
+                    try writer.writeAll("\",\"description\":\"");
+                    try writeJsonEscaped(
+                        writer,
+                        tool.description,
+                    );
+                    try writer.writeAll("\",\"arg_mode\":\"");
+                    try writer.writeAll(tool.arg_mode);
+                    try writer.writeAll("\",\"allow_args\":[");
+                    for (tool.allow_args, 0..) |arg, j| {
+                        if (j > 0) try writer.writeAll(",");
+                        try writer.writeAll("\"");
+                        try writeJsonEscaped(writer, arg);
+                        try writer.writeAll("\"");
+                    }
+                    try writer.writeAll("],\"examples\":[");
+                    for (tool.examples, 0..) |ex, j| {
+                        if (j > 0) try writer.writeAll(",");
+                        try writer.writeAll("\"");
+                        try writeJsonEscaped(writer, ex);
+                        try writer.writeAll("\"");
+                    }
+                    try writer.writeAll("]}");
+                }
+                try writer.writeAll("]}");
             },
         }
     }
@@ -898,6 +951,133 @@ test "format tool response" {
     try std.testing.expectEqualStrings("4\n", r.stdout);
     try std.testing.expectEqual(@as(u8, 0), r.exit_code);
     try std.testing.expect(!r.truncated);
+}
+
+test "parse tool_list request" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{"id":"tl1","token":"tok","op":"tool_list",
+    ++
+        \\"params":{}}
+    ;
+
+    var parsed = try parseRequest(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings(
+        "tool_list",
+        parsed.value.op,
+    );
+}
+
+test "format tool_list response" {
+    const allocator = std.testing.allocator;
+
+    const tools = [_]ToolListEntry{
+        .{
+            .name = "calc",
+            .description = "Calculator (bc)",
+            .arg_mode = "allowlist",
+            .allow_args = &[_][]const u8{"-q"},
+            .examples = &[_][]const u8{
+                "echo \"2+2\" | clawgate tool calc",
+            },
+        },
+        .{
+            .name = "grep",
+            .description = "Safe grep",
+            .arg_mode = "passthrough",
+            .allow_args = &[_][]const u8{},
+            .examples = &[_][]const u8{},
+        },
+    };
+
+    const json = try formatSuccess(allocator, "req_tl", .{
+        .tool_list = .{ .tools = &tools },
+    });
+    defer allocator.free(json);
+
+    const ParsedTools = struct {
+        id: []const u8,
+        ok: bool,
+        result: struct {
+            tools: []const struct {
+                name: []const u8,
+                description: []const u8,
+                arg_mode: []const u8,
+                allow_args: []const []const u8,
+                examples: []const []const u8,
+            },
+        },
+    };
+
+    const parsed = try std.json.parseFromSlice(
+        ParsedTools,
+        allocator,
+        json,
+        .{},
+    );
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings(
+        "req_tl",
+        parsed.value.id,
+    );
+    try std.testing.expect(parsed.value.ok);
+    const t = parsed.value.result.tools;
+    try std.testing.expectEqual(@as(usize, 2), t.len);
+    try std.testing.expectEqualStrings("calc", t[0].name);
+    try std.testing.expectEqualStrings(
+        "Calculator (bc)",
+        t[0].description,
+    );
+    try std.testing.expectEqualStrings(
+        "allowlist",
+        t[0].arg_mode,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        t[0].allow_args.len,
+    );
+    try std.testing.expectEqualStrings("-q", t[0].allow_args[0]);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        t[0].examples.len,
+    );
+    try std.testing.expectEqualStrings("grep", t[1].name);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        t[1].allow_args.len,
+    );
+}
+
+test "format tool_list empty response" {
+    const allocator = std.testing.allocator;
+
+    const json = try formatSuccess(allocator, "req_e", .{
+        .tool_list = .{ .tools = &[_]ToolListEntry{} },
+    });
+    defer allocator.free(json);
+
+    const parsed = try std.json.parseFromSlice(
+        struct {
+            ok: bool,
+            result: struct {
+                tools: []const struct { name: []const u8 },
+            },
+        },
+        allocator,
+        json,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value.ok);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        parsed.value.result.tools.len,
+    );
 }
 
 test "format response - filenames with special chars" {

@@ -104,6 +104,12 @@ clawgate token list
 ```
 Shows granted paths, permissions, and expiry. Useful to know what's accessible before attempting operations.
 
+### Discover Available Tools
+```bash
+clawgate tool remote-list
+```
+Lists custom tools registered on the resource machine that your token grants access to. Shows tool name and description. Use this to discover what tools are available before invoking them.
+
 ---
 
 ## Common Patterns
@@ -153,6 +159,12 @@ clawgate git /home/user/project diff HEAD~3..HEAD
 clawgate git /home/user/project pull origin main
 # ... make changes ...
 clawgate git /home/user/project push origin feature/fix
+```
+
+### Discover and invoke tools
+```bash
+clawgate tool remote-list
+echo "2+2" | clawgate tool calc
 ```
 
 ### Blind drop (write-only access)
@@ -218,6 +230,7 @@ If an operation is denied, you'll receive an error with a code:
 | `GIT_NOT_REPO` | Path is not a git repository |
 | `GIT_ERROR` | Git command execution failed |
 | `GIT_TIMEOUT` | Git command exceeded 30s timeout |
+| `TOOL_DENIED` | No tool registry or no tools matched your token |
 
 When access is denied, inform the user they may need to grant additional access.
 

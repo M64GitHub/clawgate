@@ -72,18 +72,38 @@ pub const AuditLog = struct {
         var op: []const u8 = "unknown";
         var path: []const u8 = "unknown";
 
-        var parsed_req = protocol.parseRequest(
-            allocator,
+        // Tokenless tool_list bypasses parseRequest
+        const is_tool_list = std.mem.indexOf(
+            u8,
             request_json,
-        ) catch null;
+            "\"token\":",
+        ) == null and std.mem.indexOf(
+            u8,
+            request_json,
+            "\"tool_list\"",
+        ) != null;
+
+        if (is_tool_list) {
+            req_id = "discovery";
+            op = "tool_list";
+            path = "-";
+        }
+
+        var parsed_req = if (!is_tool_list)
+            protocol.parseRequest(
+                allocator,
+                request_json,
+            ) catch null
+        else
+            null;
         defer if (parsed_req) |*pr| pr.deinit();
 
         if (parsed_req) |pr| {
             req_id = pr.value.id;
             op = pr.value.op;
-            // For tool ops, log tool_name; for file ops, log path
             if (std.mem.eql(u8, op, "tool")) {
-                path = pr.value.params.tool_name orelse "unknown";
+                path = pr.value.params.tool_name orelse
+                    "unknown";
             } else {
                 path = pr.value.params.path;
             }

@@ -1,6 +1,6 @@
 # ClawGate Design Document
 
-**Version:** 0.3.0
+**Version:** 0.3.1
 **Status:** Implementation Complete
 
 ## Executive Summary
@@ -591,7 +591,7 @@ All subsequent messages are encrypted.
 |-------|------|-------------|
 | `id` | string | Unique request ID for correlation |
 | `token` | string | JWT capability token |
-| `op` | string | Operation: `read`, `write`, `list`, `stat`, `git` |
+| `op` | string | Operation: `read`, `write`, `list`, `stat`, `git`, `tool`, `tool_list` |
 | `params` | object | Operation-specific parameters |
 
 **Operation Parameters:**
@@ -681,6 +681,21 @@ Git:
 }
 ```
 
+Tool List:
+```json
+{
+  "tools": [
+    {
+      "name": "calc",
+      "description": "Calculator (bc)",
+      "arg_mode": "allowlist",
+      "allow_args": ["-q"],
+      "examples": ["echo \"2+2\" | clawgate tool calc"]
+    }
+  ]
+}
+```
+
 ### Error Codes
 
 | Code | Description |
@@ -701,6 +716,7 @@ Git:
 | `GIT_BLOCKED` | Git command or flag blocked by allowlist |
 | `GIT_NOT_REPO` | Target path is not a git repository |
 | `GIT_TIMEOUT` | Git command timed out |
+| `TOOL_DENIED` | No tool registry or no matching tools |
 | `INTERNAL_ERROR` | Unexpected server error |
 
 ---
@@ -901,6 +917,8 @@ capabilities via JSON-RPC 2.0 over stdio.
 | `clawgate_list_directory` | List directory entries |
 | `clawgate_stat` | Get file/directory metadata |
 | `clawgate_git` | Run git commands on the primary machine |
+| `clawgate_tool` | Invoke a registered tool on the primary machine |
+| `clawgate_tool_list` | List available tools on the primary machine |
 
 ### Example Session
 

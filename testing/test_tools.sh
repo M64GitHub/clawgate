@@ -123,6 +123,166 @@ stop_daemons
 "$CG" tool remove other_tool >/dev/null 2>&1 || true
 
 # -------------------------------------------------------
+# Remote tool discovery (remote-list)
+# -------------------------------------------------------
+
+"$CG" tool register rl_calc \
+    --command "bc -l" \
+    --description "Calculator" >/dev/null 2>&1
+"$CG" tool register rl_grep \
+    --command "grep" \
+    --description "Safe grep" >/dev/null 2>&1
+
+test_begin "remote-list shows all registered tools"
+clear_tokens
+grant_and_add --tool rl_calc --read "$TEST_DIR/**"
+start_daemons
+OUT=$("$CG" tool remote-list 2>&1)
+assert_contains "$OUT" "rl_calc"
+
+test_begin "remote-list includes all tools regardless of grant"
+assert_contains "$OUT" "rl_grep"
+stop_daemons
+
+test_begin "remote-list with --tools-all shows all"
+clear_tokens
+grant_and_add --tools-all --read "$TEST_DIR/**"
+start_daemons
+OUT=$("$CG" tool remote-list 2>&1)
+assert_contains "$OUT" "rl_calc"
+
+test_begin "remote-list --tools-all includes second tool"
+assert_contains "$OUT" "rl_grep"
+
+test_begin "remote-list output has description"
+assert_contains "$OUT" "Calculator"
+stop_daemons
+
+test_begin "remote-list works without tool grant"
+clear_tokens
+grant_and_add --read "$TEST_DIR/**"
+start_daemons
+OUT=$("$CG" tool remote-list 2>&1)
+assert_contains "$OUT" "rl_calc"
+
+test_begin "remote-list without tool grant shows all tools"
+assert_contains "$OUT" "rl_grep"
+stop_daemons
+
+test_begin "remote-list with no tools registered"
+"$CG" tool remove rl_calc >/dev/null 2>&1 || true
+"$CG" tool remove rl_grep >/dev/null 2>&1 || true
+clear_tokens
+grant_and_add --read "$TEST_DIR/**"
+start_daemons
+OUT=$("$CG" tool remote-list 2>&1)
+assert_contains "$OUT" "No tools available"
+stop_daemons
+
+test_begin "remote-list shows all tools with any token"
+"$CG" tool register rl_a \
+    --command "echo" \
+    --description "Tool A" >/dev/null 2>&1
+"$CG" tool register rl_b \
+    --command "echo" \
+    --description "Tool B" >/dev/null 2>&1
+"$CG" tool register rl_c \
+    --command "echo" \
+    --description "Tool C" >/dev/null 2>&1
+clear_tokens
+grant_and_add --read "$TEST_DIR/**"
+start_daemons
+OUT=$("$CG" tool remote-list 2>&1)
+assert_contains "$OUT" "rl_a"
+
+test_begin "discovery shows all tools unconditionally"
+assert_contains "$OUT" "rl_b"
+
+test_begin "discovery includes third tool"
+assert_contains "$OUT" "rl_c"
+stop_daemons
+
+"$CG" tool remove rl_a >/dev/null 2>&1 || true
+"$CG" tool remove rl_b >/dev/null 2>&1 || true
+"$CG" tool remove rl_c >/dev/null 2>&1 || true
+
+# -------------------------------------------------------
+# Tokenless IPC security (raw socket tests)
+# -------------------------------------------------------
+
+# Determine IPC socket path (same logic as daemon)
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    SOCK="$XDG_RUNTIME_DIR/clawgate.sock"
+else
+    SOCK="/tmp/clawgate-$(id -u).sock"
+fi
+
+# Send raw JSON to daemon IPC socket, return response.
+# Bypasses CLI to simulate attacker with socket access.
+ipc_raw() {
+    local json="$1"
+    python3 -c "
+import socket, struct, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(5)
+s.connect(sys.argv[2])
+msg = sys.argv[1].encode()
+s.sendall(struct.pack('>I', len(msg)) + msg)
+hdr = b''
+while len(hdr) < 4: hdr += s.recv(4 - len(hdr))
+ln = struct.unpack('>I', hdr)[0]
+d = b''
+while len(d) < ln: d += s.recv(ln - len(d))
+print(d.decode())
+s.close()
+" "$json" "$SOCK" 2>/dev/null
+}
+
+"$CG" tool register sec_echo \
+    --command "echo" \
+    --description "Security test tool" >/dev/null 2>&1
+
+clear_tokens
+grant_and_add --tool sec_echo --read "$TEST_DIR/**"
+start_daemons
+
+test_begin "tokenless read rejected"
+OUT=$(ipc_raw '{"op":"read","params":{"path":"/etc/passwd"}}')
+assert_contains "$OUT" "Token required"
+
+test_begin "tokenless write rejected"
+OUT=$(ipc_raw '{"op":"write","params":{"path":"/tmp/x","content":"pwned"}}')
+assert_contains "$OUT" "Token required"
+
+test_begin "tokenless git rejected"
+OUT=$(ipc_raw '{"op":"git","params":{"repo":"/tmp","args":["status"]}}')
+assert_contains "$OUT" "Token required"
+
+test_begin "tokenless tool invoke rejected"
+OUT=$(ipc_raw '{"op":"tool","params":{"name":"sec_echo","args":["pwned"]}}')
+assert_contains "$OUT" "Token required"
+
+test_begin "tokenless list rejected"
+OUT=$(ipc_raw '{"op":"list","params":{"path":"/"}}')
+assert_contains "$OUT" "Token required"
+
+test_begin "tokenless stat rejected"
+OUT=$(ipc_raw '{"op":"stat","params":{"path":"/etc/passwd"}}')
+assert_contains "$OUT" "Token required"
+
+test_begin "empty tokenless request rejected"
+OUT=$(ipc_raw '{}')
+assert_contains "$OUT" "Token required"
+
+test_begin "tokenless tool_list cannot read files"
+OUT=$(ipc_raw '{"op":"tool_list","params":{"path":"/etc/passwd"}}')
+assert_not_contains "$OUT" "root:"
+
+stop_daemons
+
+"$CG" tool remove sec_echo >/dev/null 2>&1 || true
+
+# -------------------------------------------------------
 
 FAILURES=0
 suite_end || FAILURES=$?
