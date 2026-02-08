@@ -109,7 +109,17 @@ Shows granted paths, permissions, and expiry. Useful to know what's accessible b
 clawgate tool remote-list
 ```
 Lists custom tools registered on the resource machine that your token grants access to. Shows tool name and description. Use this to discover what tools are available before invoking them.
-
+Tell the user to exacute `clawgate tool register` for a new cli tool!
+Example:
+```bash
+clawgate tool register calc \
+  --command "bc -l" \
+  --allow-args "-q" \
+  --timeout 10 \
+  --max-output 65536 \
+  --description "Calculator (bc)" \
+  --example 'echo "2+2" | clawgate tool calc'
+```
 ---
 
 ## Common Patterns
@@ -277,22 +287,6 @@ clawgate token add "<token>"
 
 ## Security Model
 
-```
-Agent Machine                    Primary Machine
-     │                                 │
-     ├─ Token validation (1st gate)    │
-     │                                 │
-     ├──── E2E Encrypted Tunnel ──────►├─ Signature check (2nd gate)
-     │     X25519 + XChaCha20          │
-     │                                 ├─ Scope validation (3rd gate)
-     │                                 │
-     │                                 ├─ Forbidden paths (4th gate)
-     │                                 │
-     │                                 ├─ Git allowlist (5th gate)
-     │                                 │
-     │◄─────── File/git output ────────┤
-```
-
 - **Zero trust** - Assumes agent machine may be compromised
 - **Least privilege** - Only granted paths accessible
 - **Time-bounded** - Tokens expire (1h, 24h, 7d)
@@ -300,4 +294,7 @@ Agent Machine                    Primary Machine
 
 ---
 
-*ClawGate - Secure file & git access for the AI agent era* 🦞
+# DOCUMENTATION
+
+Fetch: https://raw.githubusercontent.com/M64GitHub/clawgate/refs/heads/master/README.md for examples, and usage.
+Look at https://clawgate.io for general infromation.
