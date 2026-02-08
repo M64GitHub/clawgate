@@ -9,6 +9,8 @@
 
 Think of it as **SSH keys meet JWT tokens meet capability-based security** - designed specifically for the AI agent era. Isolation without compromise.
 
+![ClawGate Architecture](docs/architecture.svg)
+
 ## Why ClawGate
 
 You're running [OpenClaw](https://github.com/openclaw/openclaw), Claude Code, or any AI agent on an isolated machine - a Mac Mini, a VPS, a container. Smart move. But now your agent needs access to your files, your repos, your tools. The usual approaches don't hold up:
