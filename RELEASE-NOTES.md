@@ -8,13 +8,14 @@ tokenless IPC path.
 
 ## Tokenless Tool Discovery
 
-`clawgate tool remote-list` no longer requires a capability token.
-The command is purely metadata — it returns tool names and
+`clawgate tool remote-list` can be used by the agent to discover tools  
+registered on the primary stystem, granted or not.
+The command is purely metadata - it returns tool names and
 descriptions, never executes anything. The resource daemon returns
 all registered tools unconditionally.
 
 ```bash
-# No grant needed — just run it
+# No grant needed - just run it
 clawgate tool remote-list
 ```
 
@@ -22,11 +23,6 @@ clawgate tool remote-list
 calc    Calculator (bc)
 catnum  Cat with line numbers
 ```
-
-**Why:** Tool discovery is a read-only metadata operation. Requiring
-a token with `--tool` scope created friction and broke the common
-case where agents have `--read` or `--git` tokens but want to see
-what tools are available.
 
 ### How It Works
 
@@ -39,20 +35,16 @@ what tools are available.
 
 ### MCP Integration
 
-The `clawgate_tool_list` MCP tool also works without tokens — it
+The `clawgate_tool_list` MCP tool also works without tokens - it
 uses the same tokenless discovery path.
 
 ## Audit Log Improvements
 
-Discovery requests now produce clean audit entries:
+Discovery requests produce clean audit entries:
 
 ```
 2026-02-08T12:00:00Z AUDIT req=discovery op=tool_list path=- success=true
 ```
-
-Previously, tokenless requests produced `req=unknown op=unknown
-path=unknown` because the audit logger tried to parse the tokenless
-JSON as a standard request.
 
 ## Security Hardening
 
