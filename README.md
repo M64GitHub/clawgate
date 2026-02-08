@@ -5,37 +5,24 @@
 
 # ClawGate
 
-**ClawGate** is a secure capability proxy for isolated AI agents. It lets agents access files, run git commands, and invoke registered tools on your primary machine - all through cryptographically signed capability tokens with fine-grained, time-bounded, audited access control.
+**ClawGate** is a secure capability proxy for isolated AI agents. It lets agents access files, run git commands, and invoke registered tools on your primary machine — all through cryptographically signed capability tokens with fine-grained, time-bounded, audited access control.
 
-Think of it as **SSH keys meet JWT tokens meet capability-based security** - designed specifically for the AI agent era. Isolation without compromise.
+Think of it as **SSH keys meet JWT tokens meet capability-based security** — designed specifically for the AI agent era. Isolation without compromise.
 
-## The Problem
+## Why ClawGate
 
-You're running [OpenClaw](https://github.com/openclaw/openclaw) (or Claude Code, or any AI agent) on an isolated machine - maybe a Mac Mini, a VPS, or a sandboxed container. **Smart move for security.**
+You're running [OpenClaw](https://github.com/openclaw/openclaw), Claude Code, or any AI agent on an isolated machine — a Mac Mini, a VPS, a container. Smart move. But now your agent needs access to your files, your repos, your tools. The usual approaches don't hold up:
 
-But now your agent needs to read files, run builds, or use tools on your machine. Your options?
-
-| Approach | Problem |
-|----------|---------|
-| NFS/SMB mount | Full filesystem access. Agent gets pwned -> you get pwned |
-| SSH + rsync | Credentials on the agent machine. Same problem |
+| Approach | Risk |
+|----------|------|
+| NFS / SMB mount | Full filesystem access. Agent gets pwned → you get pwned |
+| SSH + rsync | Credentials stored on agent machine. Same problem |
 | Manual copy | Tedious. Breaks flow. Doesn't scale |
 | Cloud sync | Your code on someone else's servers |
 
-**None of these assume the agent might be compromised.** But it might be - prompt injection is real.
+None of these assume the agent might be compromised. ClawGate does. Every operation is scoped to specific paths and tools, signed with Ed25519, encrypted end-to-end, time-bounded, revocable, and fully audited. The agent gets exactly what it needs — nothing more.
 
-## The Solution
-
-ClawGate provides **secure, scoped, audited access to files, git, and custom tools** over direct TCP with end-to-end encryption:
-
-**Key principles:**
-- **Zero trust** - Assumes the agent machine is compromised
-- **Least privilege** - Grant only specific paths and tools, not everything
-- **Time-bounded** - Tokens expire (1 hour, 24 hours, 7 days)
-- **Revocable** - Revoke tokens instantly, before they expire
-- **Complete audit** - Every operation logged with cryptographic proof
-
-## Quick Start
+## Getting Started
 
 ### Requirements
 
@@ -44,75 +31,71 @@ ClawGate provides **secure, scoped, audited access to files, git, and custom too
 
 > **Note:** Windows is not currently supported. WSL2 works but is untested.
 
+### Install
 
-**1. Install** (on both machines):
+On both machines (your laptop and the agent machine):
+
 ```bash
 curl -sSL https://clawgate.io/install.sh | sh
 ```
-Or build from source (requires Zig 0.16+):
+
+Or build from source:
+
 ```bash
 git clone https://github.com/M64GitHub/clawgate && cd clawgate
 zig build -Doptimize=ReleaseSafe
 sudo cp zig-out/bin/clawgate /usr/local/bin/
 ```
 
-**2. Generate keys** (on your laptop):
+### Setup
+
+**Generate keys** (on your laptop):
+
 ```bash
 clawgate keygen
 # Creates ~/.clawgate/keys/secret.key and public.key
 ```
 
-**3. Copy public key to agent machine**:
+**Copy public key to agent machine:**
+
 ```bash
-# On agent machine - create the directory:
-mkdir -p ~/.clawgate/keys
-
-# From your laptop - copy the public key:
-scp ~/.clawgate/keys/public.key agent-machine:~/.clawgate/keys/
+mkdir -p ~/.clawgate/keys                                    # on agent
+scp ~/.clawgate/keys/public.key agent-machine:~/.clawgate/keys/  # from laptop
 ```
-The agent needs your public key to verify token signatures.
 
-**4. Grant access** (on your laptop):
+**Grant access** (on your laptop):
+
 ```bash
 clawgate grant --read ~/projects --ttl 24h
-# Or with git access:
-clawgate grant --git ~/projects --ttl 24h
-# Or grant a registered tool:
-clawgate grant --tool calc --ttl 4h
-# Outputs a token - copy it to the agent machine
+# Or with git:  clawgate grant --git ~/projects --ttl 24h
+# Or a tool:    clawgate grant --tool calc --ttl 4h
 ```
 
-**5. Add token** (on agent machine):
+**Add the token** (on agent machine):
+
 ```bash
 clawgate token add "<paste-token-here>"
 ```
 
-**6. Start daemons**:
-```bash
-# On agent machine (start first):
-clawgate --mode agent
+**Start daemons:**
 
-# On your laptop:
-clawgate --mode resource --connect <agent-ip>:4223
+```bash
+clawgate --mode agent                              # agent machine (start first)
+clawgate --mode resource --connect <agent-ip>:4223 # your laptop
 ```
 
-**Done.** Your agent can now securely read files, run git commands, and invoke tools - depending on what you granted.
+Done. Your agent can now access exactly what you granted.
 
-> **Next steps:** See the [Custom Tools Guide](docs/TOOL-GUIDE.md) to
-> register and proxy your own tools, or the
-> [OpenClaw Quick Setup](docs/OPENCLAW-QUICK-SETUP.md) for a streamlined
-> 5-minute walkthrough.
+> **Detailed walkthroughs:** [OpenClaw Quick Setup](docs/OPENCLAW-QUICK-SETUP.md) (5 minutes) · [Custom Tools Guide](docs/TOOL-GUIDE.md)
 
-## OpenClaw Integration
+## Agent Integration
 
-ClawGate was built for [OpenClaw](https://github.com/openclaw/openclaw).  
+### OpenClaw
 
-Add the skill file: copy `skills/clawgate/SKILL.md` to your workspace.  
-Or let the agent do it. Paste it in Telegram / Whatsapp.  
-**Done**.  
+ClawGate was built for [OpenClaw](https://github.com/openclaw/openclaw). Add the skill file — copy `skills/clawgate/SKILL.md` to your workspace, or paste it directly into a chat message (Telegram, WhatsApp). The agent learns the commands from it. **Done.**
 
 ```bash
-# Your agent can now use these commands:
+# Your agent can now use:
 clawgate cat ~/projects/app/src/main.zig
 clawgate ls ~/projects/app/src/
 clawgate write ~/projects/app/notes.md --content "TODO: refactor"
@@ -121,6 +104,10 @@ clawgate git ~/projects/app diff HEAD~3
 clawgate tool calc                          # Invoke registered tools
 echo "2+2" | clawgate tool calc             # With stdin
 ```
+
+### Any Agent
+
+ClawGate works with **any AI agent** that can call CLI commands (Claude Code, Cursor, etc.) or use **MCP** servers (Claude Code, Codex, etc.).
 
 ### Example Interaction
 
@@ -132,18 +119,106 @@ Resource daemon logs audit events (on private laptop)
 Token list (on isolated agent)
 <img width="1871" height="328" alt="image" src="https://github.com/user-attachments/assets/b0ce0add-34b8-496e-8822-a950f1e2adcc" />
 
-### Works With Any Agent
+## Capabilities
 
-ClawGate isn't locked to OpenClaw. It works with **any AI agent** that can:  
+### File Operations
 
-- Call CLI commands (Claude Code, Cursor, etc.)
-- Use **MCP**  servers (Claude Code, Codex, etc.)
+Read, write, list, and stat files on your primary machine. Large files (>512KB) are automatically truncated with metadata.
+
+```bash
+clawgate cat ~/projects/app/src/main.zig          # Read
+clawgate cat --offset 1024 --length 512 large.log  # Chunked read
+clawgate ls -l --depth 2 ~/projects/app/           # List
+clawgate stat --json ~/projects/app/config.toml    # File info
+clawgate write ~/projects/notes.md --content "..."  # Write
+clawgate write --append ~/projects/log.md --content "..."  # Append
+```
+
+### Git Operations
+
+Run git commands on repositories hosted on your primary machine with three permission tiers:
+
+| Tier | Grant Flag | Allows |
+|------|-----------|--------|
+| **Read-only** | `--git` | status, diff, log, show, blame, branch (list), ... |
+| **Write** | `--git-write` | add, commit, checkout, merge, rebase, reset, ... |
+| **Full** | `--git-full` | push, pull, fetch, remote add/remove, submodule |
+
+```bash
+clawgate grant --git ~/projects/** --ttl 24h
+
+clawgate git ~/projects/myapp status
+clawgate git ~/projects/myapp log --oneline -20
+clawgate git ~/projects/myapp diff HEAD~3
+```
+
+> **Scope tip:** `--git` also enables file read/list/stat. Use `~/projects/myapp/**` if you want to browse files inside the repo with `clawgate cat` or `clawgate ls`. For git-only access, the exact repo path is sufficient: `~/projects/myapp`.
+
+Git commands run through allowlists with blocked flags (`-c`, `--exec-path`, `--git-dir`, `--work-tree`) to prevent scope escapes. See the [Design Document](docs/DESIGN.md) for the full specification.
+
+### Custom Tools
+
+Proxy **any command-line tool** through ClawGate's secure pipeline. Tools are registered on the resource machine — the agent can only invoke what has been explicitly registered and granted.
+
+```bash
+# Register (on your laptop)
+clawgate tool register calc \
+  --command "bc -l" \
+  --allow-args "-q" \
+  --timeout 10 \
+  --max-output 65536 \
+  --description "Calculator (bc)" \
+  --example 'echo "2+2" | clawgate tool calc'
+
+# Grant and use (agent side)
+clawgate grant --tool calc --ttl 4h
+echo "2+2" | clawgate tool calc
+```
+
+Each tool has an **argument validation mode**:
+
+| Mode | Behavior |
+|------|----------|
+| **Allowlist** (default) | Only explicitly listed flags are permitted |
+| **Passthrough** | All flags allowed except those in the deny list |
+
+Commands are executed via direct argv — never through a shell. No shell expansion, no pipes, no semicolons. Output is truncated at the configured limit.
+
+```bash
+clawgate tool ls                     # List registered tools
+clawgate tool info calc              # Show tool details
+clawgate tool update calc --timeout 30
+clawgate tool remove calc
+clawgate tool test calc -q           # Test locally (no daemon needed)
+```
+
+### Token Revocation
+
+Revoke tokens before they expire. The revocation list lives on the resource machine and is checked on every incoming request — a revoked token is a dead credential, even if the agent still holds it.
+
+```bash
+clawgate revoke cg_a1b2c3... --reason "compromised"
+clawgate revoke --all --reason "key rotation"
+clawgate revoked ls                  # List revoked tokens
+clawgate revoked clean               # Remove expired entries
+```
+
+### Skill Generation
+
+ClawGate auto-generates markdown skill files from the tool registry, making registered tools discoverable by AI agents:
+
+```bash
+clawgate skills generate             # Generate to skills/clawgate/
+clawgate skills export /path/to/dir  # Export to custom directory
+```
+
+Tool management commands (`register`, `update`, `remove`) automatically regenerate skill files after modifying the registry.
 
 ## How It Works
 
 ### Capability Tokens
 
-When you run `clawgate grant`, you create a **capability token** - a JWT signed with Ed25519:
+When you run `clawgate grant`, you create a **capability token** — a JWT signed with Ed25519:
 
 ```json
 {
@@ -167,18 +242,18 @@ When you run `clawgate grant`, you create a **capability token** - a JWT signed 
 }
 ```
 
-This token says: *"The agent on mario-minipc can read, list, and stat files, run read-only git commands under `/home/mario/projects/`, and invoke the `calc` tool - until the expiry time."*
+This token says: *"The agent on mario-minipc can read, list, and stat files, run read-only git commands under `/home/mario/projects/`, and invoke the `calc` tool — until the expiry time."*
 
-The token is **self-contained** - the resource daemon validates the signature and checks permissions without any database lookup.
+Tokens are **self-contained** — the resource daemon validates the signature and checks permissions without any database lookup.
 
 ### Scope Patterns
 
 ```bash
-clawgate grant --read /home/mario/file.txt      # Exact file
-clawgate grant --read /home/mario/projects/*    # Direct children only
-clawgate grant --read /home/mario/projects/**   # Recursive (all descendants)
-clawgate grant --read /home/mario/projects/*.zig # Glob pattern
-clawgate grant --git /home/mario/projects/**    # Git read-only + file read
+clawgate grant --read /home/mario/file.txt         # Exact file
+clawgate grant --read /home/mario/projects/*       # Direct children only
+clawgate grant --read /home/mario/projects/**      # Recursive (all descendants)
+clawgate grant --read /home/mario/projects/*.zig   # Glob pattern
+clawgate grant --git /home/mario/projects/**       # Git read-only + file read
 clawgate grant --git-write /home/mario/projects/** # Git read+write
 clawgate grant --git-full /home/mario/projects/**  # Git full (+ push/pull)
 clawgate grant --tool calc                         # Single tool
@@ -195,100 +270,30 @@ Every operation is logged persistently to `~/.clawgate/logs/audit.log` on the re
 2026-02-07T14:30:46Z AUDIT req=req_79565e1c op=read path=/etc/shadow success=false error=SCOPE_VIOLATION
 ```
 
-Events are also printed to stderr by the resource daemon. Denied operations that never reach the resource daemon fail immediately on the agent side:
+Denied operations that never reach the resource daemon fail immediately on the agent side:
 
 ```
 > clawgate ls /etc/hosts
 Error: No token grants list access to /etc/hosts
 ```
 
-### Git Operations
+### Architecture
 
-ClawGate supports running git commands on repositories hosted on your primary machine with three permission tiers:
+ClawGate is split into two cooperating sides: the **resource side** (your laptop) and the **agent side** (the isolated machine).
 
-| Tier | Grant Flag | Allows |
-|------|-----------|--------|
-| **Read-only** | `--git` | status, diff, log, show, blame, branch (list), ... |
-| **Write** | `--git-write` | add, commit, checkout, merge, rebase, reset, ... |
-| **Full** | `--git-full` | push, pull, fetch, remote add/remove, submodule |
+**Resource Side (your laptop)**
 
-```bash
-# Grant git read-only access
-clawgate grant --git ~/projects/** --ttl 24h
+- **Resource Daemon** — Verifies token signatures, checks revocation list, enforces scope and permissions, executes file/git/tool operations, writes audit events
+- **Tool Registry** (`~/.clawgate/tools.json`) — Tool configurations, argument validation rules, execution limits
+- **Protected Resources** — Your local files and repos, never mounted or shared directly, only accessed via validated requests
 
-# Run git commands from the agent
-clawgate git ~/projects/myapp status
-clawgate git ~/projects/myapp log --oneline -20
-clawgate git ~/projects/myapp diff HEAD~3
-```
+**Agent Side (isolated machine)**
 
-> **Scope tip:** For git-only workflows, granting the exact repo path is
-> sufficient: `clawgate grant --git ~/projects/myapp`. Git commands only
-> check the repository root path. However, `--git` also enables file
-> read/list/stat, and those check individual file paths - so use
-> `~/projects/myapp/**` if you also want to read files inside the repo
-> with `clawgate cat` or `clawgate ls`.
+- **Agent Daemon** — Stores capability tokens, proxies requests to the resource daemon, exposes a local IPC interface (Unix socket)
+- **AI Agent** — Any AI system (OpenClaw, Claude Code, Cursor, etc.), talks only to the local agent daemon, never has direct filesystem access
+- **MCP Server** (optional) — Runs over stdio, connects to the agent daemon via Unix socket, exposes `clawgate_read_file`, `clawgate_git`, `clawgate_tool`, and more
 
-**Security:** Git commands run through allowlists with blocked flags (`-c`, `--exec-path`, `--git-dir`, `--work-tree`) to prevent scope escapes and arbitrary code execution. See the [Design Document](docs/DESIGN.md) for the full allowlist specification.
-
-### Custom Tools
-
-ClawGate can proxy **any command-line tool** through its secure pipeline. Tools are registered on the resource machine by the owner - the agent can only invoke what has been explicitly registered and granted.
-
-```bash
-# Register a tool (on your laptop)
-clawgate tool register calc \
-  --command "bc -l" \
-  --allow-args "-q" \
-  --timeout 10 \
-  --max-output 65536 \
-  --description "Calculator (bc)" \
-  --example 'echo "2+2" | clawgate tool calc'
-
-# Grant access and invoke from the agent
-clawgate grant --tool calc --ttl 4h
-echo "2+2" | clawgate tool calc
-```
-
-Each tool has an **argument validation mode**:
-
-| Mode | Behavior |
-|------|----------|
-| **Allowlist** (default) | Only explicitly listed flags are permitted |
-| **Passthrough** | All flags allowed except those in the deny list |
-
-**Security:** Commands are executed via direct argv - never through a shell. No shell expansion, no pipes, no semicolons. Output is truncated at the configured limit.
-
-```bash
-# Manage tools
-clawgate tool ls                     # List registered tools
-clawgate tool info calc              # Show tool details
-clawgate tool update calc --timeout 30
-clawgate tool remove calc
-clawgate tool test calc -q           # Test locally (no daemon needed)
-```
-
-### Token Revocation
-
-Tokens can be revoked before they expire. The revocation list is stored on the resource machine and checked on every incoming request - a revoked token is a dead credential, even if the agent still holds it.
-
-```bash
-clawgate revoke cg_a1b2c3... --reason "compromised"
-clawgate revoke --all --reason "key rotation"
-clawgate revoked ls                  # List revoked tokens
-clawgate revoked clean               # Remove expired entries
-```
-
-### Skill Generation
-
-ClawGate auto-generates markdown skill files from the tool registry, making registered tools discoverable by AI agents.
-
-```bash
-clawgate skills generate             # Generate to skills/clawgate/
-clawgate skills export /path/to/dir  # Export to custom directory
-```
-
-Tool management commands (`register`, `update`, `remove`) automatically regenerate skill files after modifying the registry.
+The resource daemon connects to the agent daemon over TCP (`:4223`). All requests pass through this single encrypted channel. The resource daemon is the only component that touches the filesystem and executes tools.
 
 ## Features
 
@@ -298,18 +303,18 @@ Tool management commands (`register`, `update`, `remove`) automatically regenera
 | **Custom tool proxy** | Register any CLI tool, invoke remotely with argument validation |
 | **Git operations** | Three-tier git access: read-only, write, full (push/pull) |
 | **Token revocation** | Revoke tokens before expiry, resource-side enforcement |
-| **Time-bounded tokens** | 1h, 24h, 7d - you choose |
+| **Time-bounded tokens** | 1h, 24h, 7d — you choose |
 | **Persistent audit trail** | Every operation logged to `~/.clawgate/logs/audit.log` |
 | **Issuance tracking** | Every granted token recorded for audit and bulk revocation |
 | **Skill generation** | Auto-generated agent-readable docs from tool registry |
 | **Large file handling** | Files >512KB automatically truncated with metadata |
 | 🦞 **OpenClaw native** | Skill file included |
 | **Fast** | Pure Zig, zero dependencies, minimal latency |
-| **Defense-in-depth security** | 14 layers - see [Security](#security) below |
+| **Defense-in-depth security** | 14 layers — see [Security](#security) below |
 
 ## Security
 
-ClawGate is a **security tool**. We take this seriously.
+ClawGate is a security tool. We take this seriously.
 
 ### Threat Model
 
@@ -330,23 +335,20 @@ ClawGate is a **security tool**. We take this seriously.
 | **No shell execution** | Tools run via direct argv, no shell interpolation |
 | **Output limits** | Per-tool configurable output truncation |
 | **Symlink rejection** | All symlinks unconditionally rejected |
-| **Forbidden paths** | ~/.ssh, ~/.aws, ~/.gnupg - hardcoded, ungrantable |
+| **Forbidden paths** | ~/.ssh, ~/.aws, ~/.gnupg — hardcoded, ungrantable |
 | **Time limits** | Tokens expire, limiting blast radius |
 | **Audit** | Every operation logged locally |
 
 ### Security Practices
 
-- **Security audit every development phase** - We don't ship without review
-- **No dynamic memory in hot path** - Bounded allocations only
-- **Fuzz tested** - Token parsing, path matching, JSON handling
-- **Zero dependencies** - Zig stdlib only, no supply chain risk
+- **Security audit every development phase** — We don't ship without review
+- **No dynamic memory in hot path** — Bounded allocations only
+- **Fuzz tested** — Token parsing, path matching, JSON handling
+- **Zero dependencies** — Zig stdlib only, no supply chain risk
 
 ### Reporting Vulnerabilities
 
-Found a security issue? Email security@clawgate.io (or open a private advisory on GitHub).
-
-See [SECURITY.md](SECURITY.md) for our full security policy.
-
+Found a security issue? Email security@clawgate.io (or open a private advisory on GitHub). See [SECURITY.md](SECURITY.md) for our full security policy.
 
 ## CLI Reference
 
@@ -420,9 +422,7 @@ General Options:
 https://clawgate.io
 ```
 
-> **Tip:** Running a subcommand without required arguments shows detailed help.
-> For example, `clawgate grant` shows all grant options including `--list`,
-> `--stat`, `-k/--key`, `--issuer`, and `--subject`.
+> **Tip:** Running a subcommand without required arguments shows detailed help. For example, `clawgate grant` shows all grant options including `--list`, `--stat`, `-k/--key`, `--issuer`, and `--subject`.
 
 ### Example: Token Listing
 
@@ -451,60 +451,6 @@ Token: cg_7ab54be138936dfb8d29b81d
 
   Status: Valid
 ```
-
-## Architecture
-
-ClawGate is split into two cooperating sides: the **resource side** (your laptop) and the **agent side** (the isolated machine).
-
-### Resource Side (your laptop)
-
-**Resource Daemon**
-- Runs on your primary machine where your files live
-- Responsibilities:
-  - Verifies capability token signatures
-  - Checks token revocation list
-  - Enforces scope and permissions
-  - Executes file operations (read, list, stat, write)
-  - Executes git commands (with tiered allowlists)
-  - Executes registered tools (with argument validation)
-  - Writes audit events
-
-**Tool Registry** (`~/.clawgate/tools.json`)
-- Stores tool configurations, argument validation rules, and execution limits
-- Tools registered and managed by the machine owner
-
-**Protected Resources**
-- Your local files (e.g. `~/projects`)
-- Never mounted or shared directly
-- Only accessed via validated requests handled by the Resource Daemon
-
-### Agent Side (isolated machine, e.g. Mac Mini or VPS)
-
-**Agent Daemon**
-- Runs next to the AI agent
-- Responsibilities:
-  - Stores issued capability tokens
-  - Proxies file, git, and tool requests to the Resource Daemon
-  - Exposes a local IPC interface (Unix socket)
-
-**AI Agent**
-- Any AI system (OpenClaw, Claude Code, Cursor, etc.)
-- Talks only to the local Agent Daemon
-- Never has direct filesystem access
-
-**MCP Server (optional)**
-- Runs over stdio
-- Connects to the Agent Daemon via Unix socket
-- Provides tool-style access for compatible agents
-- Exposes `clawgate_read_file`, `clawgate_git`, `clawgate_tool`, and more
-
-### Communication
-
-- The Resource Daemon connects to the Agent Daemon over TCP (`:4223`)
-- All file, git, and tool requests pass through this channel
-- The Resource Daemon is the only component that touches the filesystem and executes tools
-
-(Security properties of this channel are defined in the **Security** section.)
 
 ## Documentation
 
@@ -541,17 +487,16 @@ ClawGate is split into two cooperating sides: the **resource side** (your laptop
 
 Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 
-- **Bug reports** - Open an issue with reproduction steps
-- **Feature requests** - Open an issue describing the use case
-- **Pull requests** - Fork, branch, PR (with tests please)
+- **Bug reports** — Open an issue with reproduction steps
+- **Feature requests** — Open an issue describing the use case
+- **Pull requests** — Fork, branch, PR (with tests please)
 
 ## License
 
-MIT - see [LICENSE](LICENSE)
+MIT — see [LICENSE](LICENSE)
 
 <p align="center">
-  <b>ClawGate</b> - Secure capability proxy for the AI agent era<br>
+  <b>ClawGate</b> — Secure capability proxy for the AI agent era<br>
   Built with &lt;3 and Zig by <a href="https://github.com/M64GitHub">M64</a><br>Designed in cooperation with <a href="https://github.com/EchoMaster128">Echo128 🦞</a><br>
   <a href="https://clawgate.io">clawgate.io</a>
 </p>
-
