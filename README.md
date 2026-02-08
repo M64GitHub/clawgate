@@ -1,6 +1,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.16+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
-[![Version](https://img.shields.io/badge/version-0.3.1-green.svg)](https://github.com/M64GitHub/clawgate/releases)
+[![Version](https://img.shields.io/badge/version-0.3.2-green.svg)](https://github.com/M64GitHub/clawgate/releases)
 [![GitHub Release](https://img.shields.io/github/v/release/M64GitHub/clawgate)](https://github.com/M64GitHub/clawgate/releases/latest)
 
 # ClawGate

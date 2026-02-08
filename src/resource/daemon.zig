@@ -89,19 +89,6 @@ pub fn runWithIo(
     };
     defer alog.deinit(io);
 
-    var tool_reg = tools_mod.ToolRegistry.load(
-        allocator,
-        io,
-        home,
-    ) catch {
-        std.log.err(
-            "Failed to load tool registry, exiting",
-            .{},
-        );
-        return error.ToolRegistryLoadFailed;
-    };
-    defer tool_reg.deinit(allocator);
-
     while (true) {
         connectAndServe(
             allocator,
@@ -109,7 +96,6 @@ pub fn runWithIo(
             config,
             public_key,
             &alog,
-            &tool_reg,
             home,
         ) catch |err| {
             std.log.warn(
@@ -132,7 +118,6 @@ fn connectAndServe(
     config: Config,
     public_key: crypto.PublicKey,
     alog: *const AuditLog,
-    tool_reg: *const tools_mod.ToolRegistry,
     home: []const u8,
 ) !void {
     std.log.info(
@@ -245,7 +230,6 @@ fn connectAndServe(
         public_key,
         config,
         alog,
-        tool_reg,
         home,
     );
 }
@@ -258,7 +242,6 @@ fn mainLoop(
     public_key: crypto.PublicKey,
     config: Config,
     alog: *const AuditLog,
-    tool_reg: *const tools_mod.ToolRegistry,
     home: []const u8,
 ) void {
     while (true) {
@@ -291,6 +274,22 @@ fn mainLoop(
         };
         defer rev_list.deinit(allocator);
 
+        // Reload tool registry per-request so newly
+        // registered tools work without daemon restart.
+        var tool_reg = tools_mod.ToolRegistry.load(
+            allocator,
+            io,
+            home,
+        ) catch {
+            std.log.warn(
+                "Failed to reload tool registry",
+                .{},
+            );
+            sendErrorResponse(allocator, enc_conn);
+            continue;
+        };
+        defer tool_reg.deinit(allocator);
+
         const response_json = handlers.handleRequestFull(
             allocator,
             io,
@@ -301,7 +300,7 @@ fn mainLoop(
                 .expected_subject = config.expected_subject,
             },
             &rev_list,
-            tool_reg,
+            &tool_reg,
         ) catch |err| {
             std.log.err("Handler error: {}", .{err});
             sendErrorResponse(allocator, enc_conn);

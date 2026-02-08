@@ -22,6 +22,7 @@ const ipc_client = @import("../agent/ipc_client.zig");
 const tokens = @import("../agent/tokens.zig");
 const protocol = @import("../protocol/json.zig");
 const audit_log = @import("../resource/audit_log.zig");
+const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const File = Io.File;
@@ -35,10 +36,9 @@ pub const ToolCmdError = error{
 };
 
 const MANAGEMENT_SUBCMDS = [_][]const u8{
-    "register",    "ls",     "list",   "info",
-    "update",      "remove", "test",   "--help",
-    "-h",          "help",   "generate",
-    "remote-list",
+    "register", "ls",     "list",     "info",
+    "update",   "remove", "test",     "--help",
+    "-h",       "help",   "generate", "remote-list",
 };
 
 /// Main entry point for `clawgate tool` commands.
@@ -543,28 +543,44 @@ fn handleTest(
         exec_args[j] = a;
     }
 
-    // Read stdin if not a TTY
+    // Read stdin if not a TTY and data is available
     var stdin_data: ?[]const u8 = null;
     defer if (stdin_data) |d| allocator.free(d);
 
     const stdin_file = File.stdin();
     if (!(stdin_file.isTty(io) catch false)) {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer buf.deinit(allocator);
-        var read_buf: [4096]u8 = undefined;
-        var reader = stdin_file.reader(io, &read_buf);
-        while (true) {
-            const data = reader.interface.peekGreedy(1) catch
-                break;
-            if (data.len == 0) break;
-            buf.appendSlice(allocator, data) catch break;
-            reader.interface.toss(data.len);
-        }
-        if (buf.items.len > 0) {
-            stdin_data = allocator.dupe(
-                u8,
-                buf.items,
-            ) catch null;
+        // poll(0) to avoid blocking on stdin with no writer
+        var poll_fds = [1]posix.pollfd{.{
+            .fd = stdin_file.handle,
+            .events = posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = posix.poll(&poll_fds, 0) catch 0;
+        if (ready > 0) {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer buf.deinit(allocator);
+            var read_buf: [4096]u8 = undefined;
+            var reader = stdin_file.reader(
+                io,
+                &read_buf,
+            );
+            while (true) {
+                const data =
+                    reader.interface.peekGreedy(1) catch
+                        break;
+                if (data.len == 0) break;
+                buf.appendSlice(
+                    allocator,
+                    data,
+                ) catch break;
+                reader.interface.toss(data.len);
+            }
+            if (buf.items.len > 0) {
+                stdin_data = allocator.dupe(
+                    u8,
+                    buf.items,
+                ) catch null;
+            }
         }
     }
 
@@ -644,28 +660,44 @@ fn handleInvocation(
         return ToolCmdError.ExecFailed;
     };
 
-    // Read stdin if not a TTY
+    // Read stdin if not a TTY and data is available
     var stdin_data: ?[]const u8 = null;
     defer if (stdin_data) |d| allocator.free(d);
 
     const stdin_file = File.stdin();
     if (!(stdin_file.isTty(io) catch false)) {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer buf.deinit(allocator);
-        var read_buf: [4096]u8 = undefined;
-        var reader = stdin_file.reader(io, &read_buf);
-        while (true) {
-            const data = reader.interface.peekGreedy(1) catch
-                break;
-            if (data.len == 0) break;
-            buf.appendSlice(allocator, data) catch break;
-            reader.interface.toss(data.len);
-        }
-        if (buf.items.len > 0) {
-            stdin_data = allocator.dupe(
-                u8,
-                buf.items,
-            ) catch null;
+        // poll(0) to avoid blocking on stdin with no writer
+        var poll_fds = [1]posix.pollfd{.{
+            .fd = stdin_file.handle,
+            .events = posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = posix.poll(&poll_fds, 0) catch 0;
+        if (ready > 0) {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer buf.deinit(allocator);
+            var read_buf: [4096]u8 = undefined;
+            var reader = stdin_file.reader(
+                io,
+                &read_buf,
+            );
+            while (true) {
+                const data =
+                    reader.interface.peekGreedy(1) catch
+                        break;
+                if (data.len == 0) break;
+                buf.appendSlice(
+                    allocator,
+                    data,
+                ) catch break;
+                reader.interface.toss(data.len);
+            }
+            if (buf.items.len > 0) {
+                stdin_data = allocator.dupe(
+                    u8,
+                    buf.items,
+                ) catch null;
+            }
         }
     }
 

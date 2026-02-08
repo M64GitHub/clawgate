@@ -2,6 +2,39 @@
 
 ---
 
+## v0.3.1
+
+This release adds **tokenless tool discovery** via `tool remote-list`,
+letting agents discover all registered tools without requiring any
+capability token or grant. It also improves audit logging for
+discovery requests and adds security hardening tests for the
+tokenless IPC path.
+
+### Tokenless Tool Discovery
+
+`clawgate tool remote-list` can be used by the agent to discover tools
+registered on the primary system, granted or not.
+The command is purely metadata - it returns tool names and
+descriptions, never executes anything. The resource daemon returns
+all registered tools unconditionally.
+
+```bash
+# No grant needed - just run it
+clawgate tool remote-list
+```
+
+### MCP Integration
+
+The `clawgate_tool_list` MCP tool also works without tokens - it
+uses the same tokenless discovery path.
+
+### Security Hardening
+
+Added 8 integration tests verifying that the tokenless IPC path
+cannot be exploited.
+
+---
+
 ## v0.3.0
 
 This release extends ClawGate beyond file and git access. You can now

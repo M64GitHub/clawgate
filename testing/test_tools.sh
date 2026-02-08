@@ -123,6 +123,34 @@ stop_daemons
 "$CG" tool remove other_tool >/dev/null 2>&1 || true
 
 # -------------------------------------------------------
+# Hot-reload (register/remove while daemons running)
+# -------------------------------------------------------
+
+# Grant token for echo_hot BEFORE it exists (--tool does
+# not validate existence) so the CLI can find a matching
+# token. The resource daemon must hot-reload the registry
+# to see the newly registered tool.
+clear_tokens
+grant_and_add --tool echo_hot --read "$TEST_DIR/**"
+start_daemons
+
+test_begin "tool registered after daemon start works"
+"$CG" tool register echo_hot \
+    --command "echo" \
+    --description "Hot reload test" >/dev/null 2>&1
+OUT=$(echo "" | "$CG" tool echo_hot "hot_hello" 2>&1)
+assert_contains "$OUT" "hot_hello"
+
+test_begin "tool removed after daemon start is denied"
+"$CG" tool remove echo_hot >/dev/null 2>&1
+assert_fails \
+    "echo '' | \"$CG\" tool echo_hot 'should_fail'" \
+    "TOOL_DENIED\|not registered"
+
+stop_daemons
+"$CG" tool remove echo_hot >/dev/null 2>&1 || true
+
+# -------------------------------------------------------
 # Remote tool discovery (remote-list)
 # -------------------------------------------------------
 
