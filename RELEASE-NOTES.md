@@ -10,7 +10,7 @@ a `--scope`, and all path-like arguments are validated against it.
 Previously, custom tool arguments were only checked against flag
 allow/deny lists. Positional arguments (including file paths) passed
 through unchecked to the subprocess. A tool registered with scope
-`projects/webapp` could be invoked as `rg pattern /etc/hosts` — the
+`projects/webapp` could be invoked as `rg pattern /etc/hosts` - the
 subprocess would happily read `/etc/hosts`.
 
 ClawGate now applies three layers of argument security:
@@ -76,10 +76,10 @@ or `python -c` that never need filesystem access.
 Invalid scope values are rejected at `tool register` and `tool update`
 time:
 
-- `.` — too permissive (grants entire `$HOME`)
-- `..` — escapes `$HOME`
-- Absolute paths (`/etc`) — scopes must be relative to `$HOME`
-- Empty segments (`a;;b`) — malformed
+- `.` - too permissive (grants entire `$HOME`)
+- `..` - escapes `$HOME`
+- Absolute paths (`/etc`) - scopes must be relative to `$HOME`
+- Empty segments (`a;;b`) - malformed
 
 ### CWD Confinement
 
@@ -100,12 +100,12 @@ The `--scope` option is also available in `tool update`.
 
 ## Documentation Updates
 
-- **README.md** — Updated custom tools section, security defense
+- **README.md** - Updated custom tools section, security defense
   layers table (14 → 16 layers), CLI reference with `--scope`
-- **docs/DESIGN.md** — Added complete "Custom Tool Operations"
+- **docs/DESIGN.md** - Added complete "Custom Tool Operations"
   section, updated Layer 3: Path Security, Appendix A error codes,
   CLI reference, revocation section
-- **docs/TOOL-GUIDE.md** — Added "Tool Scope and Path Security"
+- **docs/TOOL-GUIDE.md** - Added "Tool Scope and Path Security"
   section, updated all examples with scope, new troubleshooting
   entries for `PATH_BLOCKED` and scope errors
 
