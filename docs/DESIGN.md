@@ -1,6 +1,6 @@
 # ClawGate Design Document
 
-**Version:** 0.3.2
+**Version:** 0.3.3
 **Status:** Implementation Complete
 
 ## Executive Summary
@@ -17,7 +17,8 @@ over direct TCP connections.
 - Outbound-only connections from the trusted machine
 - Hardcoded forbidden paths for sensitive credentials
 - Three-tier git permissions with command allowlists
-- Audit trail of successful file and git operations on the resource daemon
+- Custom tool proxy with path scoping and CWD confinement
+- Audit trail of successful file, git, and tool operations on the resource daemon
 
 ## Document Scope
 
@@ -250,6 +251,15 @@ Multiple layers protect against path-based attacks:
 
 3. **Forbidden Paths** - Hardcoded patterns block access to sensitive
    locations regardless of token scope.
+
+4. **Tool Path Scanning** - For custom tools, all non-flag arguments are
+   scanned for path-like patterns (`/...`, `~/...`, `./...`, `../...`).
+   Detected paths are canonicalized and validated against the tool's scope
+   and forbidden path list. Tools without a scope block all path arguments.
+
+5. **CWD Confinement** - Tool subprocesses execute with their working
+   directory set to `$HOME`, ensuring relative paths resolve from a known,
+   predictable base rather than the daemon's working directory.
 
 #### Layer 4: Audit Logging
 
@@ -609,6 +619,10 @@ All subsequent messages are encrypted.
 | stat | path | string | Absolute path |
 | git | path | string | Absolute repository path |
 | git | args | string[] | Git arguments (e.g. `["status", "--short"]`) |
+| tool | tool_name | string | Registered tool name |
+| tool | tool_args | string[]? | Arguments to pass to the tool |
+| tool | input | string? | Base64-encoded stdin data |
+| tool_list | *(none)* | | Returns authorized tools |
 
 ### Response Format
 
@@ -681,6 +695,17 @@ Git:
 }
 ```
 
+Tool:
+```json
+{
+  "tool_name": "calc",
+  "stdout": "4\n",
+  "stderr": "",
+  "exit_code": 0,
+  "truncated": false
+}
+```
+
 Tool List:
 ```json
 {
@@ -716,7 +741,12 @@ Tool List:
 | `GIT_BLOCKED` | Git command or flag blocked by allowlist |
 | `GIT_NOT_REPO` | Target path is not a git repository |
 | `GIT_TIMEOUT` | Git command timed out |
-| `TOOL_DENIED` | No tool registry or no matching tools |
+| `TOKEN_REVOKED` | Token has been revoked |
+| `TOOL_DENIED` | No tool registry or token lacks tool access |
+| `TOOL_TIMEOUT` | Tool execution timed out |
+| `TOOL_ERROR` | Tool execution failed |
+| `ARG_BLOCKED` | Tool argument blocked by allow/deny list |
+| `PATH_BLOCKED` | Tool path argument outside scope or forbidden |
 | `INTERNAL_ERROR` | Unexpected server error |
 
 ---
@@ -890,6 +920,203 @@ Receive Git Request
 5. **Output truncation at 512 KB** prevents memory exhaustion
 6. **`--git-dir`/`--work-tree` blocked** prevents pointing git at repos
    outside scope
+
+---
+
+## Custom Tool Operations
+
+### Overview
+
+ClawGate supports registering arbitrary command-line tools on the resource
+machine and invoking them remotely from the agent. Tools go through the same
+zero-trust pipeline as file and git operations: capability tokens, argument
+validation, path scoping, output truncation, audit logging, and end-to-end
+encryption.
+
+### Tool Registration
+
+Tools are registered on the resource machine via the CLI and stored in
+`~/.clawgate/tools.json`. Each tool defines:
+
+| Field | Description |
+|-------|-------------|
+| `command` | The executable command (e.g. `"bc -l"`, `"rg"`) |
+| `arg_mode` | `allowlist` (default) or `passthrough` |
+| `allow_args` | Permitted flags (allowlist mode) |
+| `deny_args` | Blocked flags (passthrough mode) |
+| `scope` | Semicolon-separated paths relative to `$HOME` (or null) |
+| `timeout_seconds` | Maximum execution time |
+| `max_output_bytes` | Output truncation limit |
+
+### Scope Model
+
+The `scope` field controls what filesystem paths a tool can access through
+its arguments:
+
+| Scope Value | Meaning |
+|-------------|---------|
+| `null` (no scope) | Zero filesystem access. All path-like arguments blocked. |
+| `"projects/webapp"` | Access to `$HOME/projects/webapp` and descendants |
+| `"projects;docs"` | Access to both `$HOME/projects` and `$HOME/docs` |
+
+Scope entries are always relative to `$HOME`. Semicolons separate multiple
+entries. Each entry grants recursive access to that directory tree.
+
+**Rejected scope values:**
+- `.` - equivalent to entire `$HOME`, too permissive
+- `..` - escapes `$HOME`
+- Absolute paths (e.g. `/etc`) - scopes are always `$HOME`-relative
+- Empty segments (e.g. `"a;;b"`)
+- Segments containing `..` (e.g. `"projects/../etc"`)
+
+### Security Architecture
+
+Tool execution has three layers of argument security:
+
+```
+Tool Invocation Request
+       |
+       v
+  Layer 1: Flag Validation
+  (allowlist / denylist mode)
+       |
+  [Blocked flag?] --Yes--> Reject: ARG_BLOCKED
+       |
+       No
+       v
+  Layer 2: Path Scanning
+  For each non-flag argument:
+    - Is it path-like? (/..., ~/..., ./..., ../..., ., ..)
+    - No scope? Block any path-like arg -> PATH_BLOCKED
+    - Has scope? Expand ~, resolve relative paths against
+      $HOME, canonicalize, check forbidden paths,
+      check against scope entries via isWithin()
+       |
+  [Out of scope?] --Yes--> Reject: PATH_BLOCKED
+  [Forbidden?] ----Yes--> Reject: PATH_BLOCKED
+       |
+       No
+       v
+  Layer 3: CWD Confinement
+  Execute subprocess with cwd=$HOME
+       |
+       v
+  Return ToolResult (stdout, stderr, exit_code)
+```
+
+#### Layer 1: Flag Validation
+
+**Allowlist mode** (default): Only explicitly listed flags pass through.
+Any flag not in `allow_args` is rejected with `ARG_BLOCKED`.
+
+**Passthrough mode**: All flags pass through except those in `deny_args`.
+The `--flag=value` form is also checked (e.g. `--exec=evil` is blocked
+if `--exec` is denied).
+
+Both modes always allow positional (non-flag) arguments to pass to Layer 2.
+
+#### Layer 2: Path Scanning
+
+All non-flag arguments are scanned for syntactically unambiguous path forms:
+
+| Pattern | Example | Detected? |
+|---------|---------|-----------|
+| Absolute | `/etc/hosts` | Yes |
+| Tilde | `~/project/file.zig` | Yes |
+| Dot-relative | `./file`, `../file` | Yes |
+| Current/parent dir | `.`, `..` | Yes |
+| Bare filename | `hosts`, `Makefile` | No (could be subcommand) |
+| Flag | `-n`, `--verbose` | No (handled by Layer 1) |
+
+For each detected path:
+
+1. **Expand tilde** to `$HOME` (consistent with `path.expand()`)
+2. **Resolve relative paths** against `$HOME` (the CWD base)
+3. **Canonicalize** via `scope.canonicalizePath()` - rejects `..` escapes,
+   null bytes, non-absolute results
+4. **Check forbidden paths** via `isForbiddenPath()` - `.ssh`, `.gnupg`,
+   `.aws`, etc. are blocked even if within scope
+5. **Check scope entries** - the canonical path must fall within at least
+   one `$HOME/<scope_entry>` via `scope.isWithin()`
+
+If no scope entry matches, the path is rejected with `PATH_BLOCKED`.
+
+#### Layer 3: CWD Confinement
+
+All tool subprocesses execute with their working directory set to `$HOME`.
+This provides defense in depth: even if a bare filename slips through path
+detection (e.g. `hosts`), it resolves within `$HOME` rather than a
+potentially sensitive directory.
+
+### Request Format
+
+```json
+{
+  "id": "req_abc123",
+  "token": "<jwt>",
+  "op": "tool",
+  "params": {
+    "tool_name": "rg",
+    "tool_args": ["pattern", "~/projects/webapp/src"],
+    "input": null
+  }
+}
+```
+
+### Response Format
+
+```json
+{
+  "id": "req_abc123",
+  "ok": true,
+  "result": {
+    "tool_name": "rg",
+    "stdout": "src/main.zig:42: pattern match\n",
+    "stderr": "",
+    "exit_code": 0,
+    "truncated": false
+  }
+}
+```
+
+### Tool Discovery
+
+Agents can discover available tools via `tool_list`. This request can be
+sent without a token (tokenless discovery) for metadata only, or with a
+token for scope-filtered results.
+
+**Tokenless request** (returns all registered tools):
+```json
+{"op": "tool_list", "params": {}}
+```
+
+**Authenticated request** (returns only tools the token can invoke):
+```json
+{
+  "id": "req_abc123",
+  "token": "<jwt>",
+  "op": "tool_list",
+  "params": {}
+}
+```
+
+### Execution Model
+
+- Commands are split into argv tokens and executed via `std.process.run`
+  or `std.process.spawn` (when stdin is provided) - **never through a shell**
+- Output is collected with a 2x buffer (to handle truncation gracefully)
+  and trimmed to `max_output_bytes`
+- The `truncated` flag indicates when output was cut short
+- Exit code is captured from the child process (signals mapped to 128)
+
+### Known Limitations
+
+| Limitation | Description |
+|------------|-------------|
+| **Symlinks within scope** | A symlink inside scope pointing outside cannot be caught by argument scanning. Future: Landlock sandboxing. |
+| **Paths via stdin** | If a tool reads paths from stdin, they cannot be validated. CWD confinement mitigates but doesn't prevent absolute paths. |
+| **Flag values** | `--file=/etc/hosts` - the flag is controlled by allow/deny lists, but the path value is not separately validated. |
+| **Environment variables** | A tool could read `$HOME` or other env vars to construct paths. Future: subprocess environment sanitization. |
 
 ---
 
@@ -1167,7 +1394,7 @@ clawgate keygen [options]
   -f, --force              Overwrite existing keys
 
 # Grant capability token
-clawgate grant [options] <path>
+clawgate grant [options] [path]
   -r, --read               Allow read (includes list, stat)
   -w, --write              Allow write
   --list                   Allow list only
@@ -1175,6 +1402,8 @@ clawgate grant [options] <path>
   --git                    Git read-only (+ read, list, stat)
   --git-write              Git read+write (+ file write)
   --git-full               Git full access (+ push/pull/fetch)
+  --tool <name>            Grant access to a registered tool
+  --tools-all              Grant access to all registered tools
   -t, --ttl <duration>     Token lifetime (default: 24h)
   -k, --key <path>         Secret key path
   --issuer <id>            Issuer identity
@@ -1276,6 +1505,33 @@ clawgate git ~/projects/myapp commit -m "fix bug"
 clawgate git ~/projects/myapp push origin main
 ```
 
+### Tool Registry
+
+```bash
+# Register a tool (resource machine)
+clawgate tool register <name> --command "..." [options]
+  --command <cmd>          Command to execute (required)
+  --scope <paths>          Semicolon-separated scope paths (relative to $HOME)
+  --allow-args <arg>       Allowed flag (repeatable, sets allowlist mode)
+  --deny-args <arg>        Denied flag (repeatable)
+  --timeout <secs>         Timeout in seconds (default: 30)
+  --max-output <bytes>     Max output bytes (default: 65536)
+  --description <text>     Tool description
+  --example <text>         Usage example (repeatable)
+
+# Management
+clawgate tool ls                  List registered tools
+clawgate tool info <name>         Show tool details
+clawgate tool update <name>       Update tool config (same options as register)
+clawgate tool remove <name>       Remove a tool
+clawgate tool test <name> [args]  Test tool locally (no daemons needed)
+clawgate tool generate            Generate skill files
+
+# Remote discovery and invocation (agent machine)
+clawgate tool remote-list         List tools available via daemon
+clawgate tool <name> [args]       Invoke tool via daemon
+```
+
 ### Monitoring
 
 ```bash
@@ -1340,14 +1596,20 @@ Events are also printed to stderr by the resource daemon.
 
 ### Revocation
 
-ClawGate does not implement active token revocation. Tokens expire naturally
-at their `exp` timestamp. For immediate revocation:
+ClawGate supports active token revocation via a resource-side revocation
+list at `~/.clawgate/revoked.json`. The list is reloaded on every incoming
+request, so revocations take effect immediately without daemon restart.
 
-1. Delete token file from agent's token directory
-2. Restart agent daemon
-3. Wait for token expiration
+```bash
+clawgate revoke <token-id> --reason "compromised"
+clawgate revoke --all --reason "key rotation"
+clawgate revoked ls
+clawgate revoked clean   # Remove expired entries
+```
 
-Consider using shorter TTLs if revocation needs are anticipated.
+When a revoked token is used, the resource daemon rejects the request
+with `TOKEN_REVOKED`. The agent daemon automatically removes revoked
+tokens from its local store on first rejection.
 
 ## Appendix A: Error Code Reference
 
@@ -1355,6 +1617,7 @@ Consider using shorter TTLs if revocation needs are anticipated.
 |------|-------------|-------------|
 | INVALID_TOKEN | 401 | Token malformed or signature invalid |
 | TOKEN_EXPIRED | 401 | Token past expiration time |
+| TOKEN_REVOKED | 401 | Token revoked via revocation list |
 | SCOPE_VIOLATION | 403 | Path not in token scope |
 | INVALID_OP | 400 | Unknown operation |
 | INVALID_PATH | 400 | Path failed canonicalization |
@@ -1369,5 +1632,10 @@ Consider using shorter TTLs if revocation needs are anticipated.
 | GIT_BLOCKED | 403 | Git command or flag blocked by allowlist |
 | GIT_NOT_REPO | 400 | Target path is not a git repository |
 | GIT_TIMEOUT | 504 | Git command timed out |
+| TOOL_DENIED | 403 | No tool capability or tool not registered |
+| TOOL_ERROR | 500 | Tool subprocess execution failed |
+| TOOL_TIMEOUT | 504 | Tool exceeded configured timeout |
+| ARG_BLOCKED | 403 | Tool argument blocked by allow/deny list |
+| PATH_BLOCKED | 403 | Path argument outside tool scope |
 | INTERNAL_ERROR | 500 | Unexpected server error |
 

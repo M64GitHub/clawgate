@@ -159,6 +159,7 @@ fn handleRegister(
     var example_list: [16][]const u8 = undefined;
     var example_count: usize = 0;
     var arg_mode: tools_mod.ArgMode = .passthrough;
+    var scope_val: ?[]const u8 = null;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -184,6 +185,11 @@ fn handleRegister(
                 deny_args_list[deny_count] = args[i];
                 deny_count += 1;
             }
+        } else if (std.mem.eql(u8, arg, "--scope") and
+            has_next)
+        {
+            i += 1;
+            scope_val = args[i];
         } else if (std.mem.eql(u8, arg, "--timeout") and
             has_next)
         {
@@ -218,6 +224,22 @@ fn handleRegister(
         }
     }
 
+    // Validate scope if provided
+    if (scope_val) |sv| {
+        const entries = tool_exec.parseScopeEntries(
+            allocator,
+            sv,
+        ) catch {
+            std.debug.print(
+                "Error: Invalid scope value\n",
+                .{},
+            );
+            return ToolCmdError.InvalidArgs;
+        };
+        for (entries) |e| allocator.free(e);
+        allocator.free(entries);
+    }
+
     if (command == null) {
         std.debug.print("Error: --command required\n", .{});
         return ToolCmdError.InvalidArgs;
@@ -249,7 +271,7 @@ fn handleRegister(
         .allow_args = allow_args_list[0..allow_count],
         .deny_args = deny_args_list[0..deny_count],
         .arg_mode = arg_mode,
-        .scope = null,
+        .scope = scope_val,
         .timeout_seconds = timeout,
         .max_output_bytes = max_output,
         .description = description,
@@ -409,6 +431,7 @@ fn handleUpdate(
     var timeout: u32 = existing.timeout_seconds;
     var max_output: usize = existing.max_output_bytes;
     var description: []const u8 = existing.description;
+    var scope_val: ?[]const u8 = existing.scope;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -417,6 +440,11 @@ fn handleUpdate(
         if (std.mem.eql(u8, arg, "--command") and has_next) {
             i += 1;
             command = args[i];
+        } else if (std.mem.eql(u8, arg, "--scope") and
+            has_next)
+        {
+            i += 1;
+            scope_val = args[i];
         } else if (std.mem.eql(u8, arg, "--timeout") and
             has_next)
         {
@@ -443,12 +471,28 @@ fn handleUpdate(
         }
     }
 
+    // Validate scope if changed
+    if (scope_val) |sv| {
+        const entries = tool_exec.parseScopeEntries(
+            allocator,
+            sv,
+        ) catch {
+            std.debug.print(
+                "Error: Invalid scope value\n",
+                .{},
+            );
+            return ToolCmdError.InvalidArgs;
+        };
+        for (entries) |e| allocator.free(e);
+        allocator.free(entries);
+    }
+
     reg.update(allocator, io, name, .{
         .command = command,
         .allow_args = existing.allow_args,
         .deny_args = existing.deny_args,
         .arg_mode = existing.arg_mode,
-        .scope = existing.scope,
+        .scope = scope_val,
         .timeout_seconds = timeout,
         .max_output_bytes = max_output,
         .description = description,
@@ -589,12 +633,26 @@ fn handleTest(
         return ToolCmdError.ExecFailed;
     };
 
+    tool_exec.validatePaths(
+        allocator,
+        config.*,
+        exec_args[0..n],
+        home,
+    ) catch {
+        std.debug.print(
+            "Error: Path outside tool scope\n",
+            .{},
+        );
+        return ToolCmdError.ExecFailed;
+    };
+
     var result = tool_exec.executeTool(
         allocator,
         io,
         config.*,
         exec_args[0..n],
         stdin_data,
+        home,
     ) catch |err| {
         std.debug.print("Error: {}\n", .{err});
         return ToolCmdError.ExecFailed;
@@ -958,6 +1016,7 @@ fn printUsage() void {
         \\    --command <cmd>       Command to execute (required)
         \\    --allow-args <arg>    Allowed flag (repeatable)
         \\    --deny-args <arg>     Denied flag (repeatable)
+        \\    --scope <paths>       Semicolon-separated scope paths
         \\    --timeout <secs>      Timeout in seconds (default: 30)
         \\    --max-output <bytes>  Max output bytes (default: 65536)
         \\    --description <text>  Tool description

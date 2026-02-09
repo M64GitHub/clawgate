@@ -301,6 +301,7 @@ fn mainLoop(
             },
             &rev_list,
             &tool_reg,
+            home,
         ) catch |err| {
             std.log.err("Handler error: {}", .{err});
             sendErrorResponse(allocator, enc_conn);

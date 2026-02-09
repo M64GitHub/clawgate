@@ -10,6 +10,7 @@ This guide walks you through integrating your first tool from scratch.
 ## Table of Contents
 
 - [Your First Tool: Calculator](#your-first-tool-calculator)
+- [Tool Scope and Path Security](#tool-scope-and-path-security)
 - [Troubleshooting](#troubleshooting)
 - [Going Further](#going-further)
 - [Remote Tool Discovery](#remote-tool-discovery)
@@ -234,6 +235,113 @@ Tool removed
 
 Stop both daemons with `Ctrl+C` in their respective terminals.
 
+> **Why no `--scope`?** The calculator tool (`bc`) reads from stdin and
+> writes to stdout. It never accesses the filesystem, so no scope is
+> needed. Tools without a scope are blocked from receiving any
+> path-like arguments (`/...`, `~/...`, `./...`, `../...`).
+
+---
+
+## Tool Scope and Path Security
+
+Tools that access the filesystem **must** have a `--scope` restricting
+which directories they can reach. Without a scope, ClawGate blocks
+any argument that looks like a file path.
+
+### Registering a Scoped Tool
+
+Scope values are semicolon-separated directories relative to `$HOME`:
+
+**[primary]**
+```bash
+clawgate tool register mygrep \
+  --command "grep" \
+  --arg-mode passthrough \
+  --deny-args "--exec" \
+  --scope "projects/webapp" \
+  --description "Grep within webapp"
+```
+
+Now `mygrep` can only access files under `~/projects/webapp/`:
+
+```bash
+# Works - path within scope:
+clawgate tool test mygrep -rn "TODO" ~/projects/webapp/src/
+
+# Blocked - path outside scope:
+clawgate tool test mygrep -rn "TODO" /etc/hosts
+# Error: Path blocked
+
+# Blocked - traversal attempt:
+clawgate tool test mygrep -rn "TODO" ~/projects/webapp/../../etc/passwd
+# Error: Path blocked
+```
+
+### Multiple Scope Entries
+
+Grant access to several directories:
+
+```bash
+clawgate tool register mygrep \
+  --command "grep" \
+  --arg-mode passthrough \
+  --deny-args "--exec" \
+  --scope "projects/webapp;Documents/reports" \
+  --description "Grep in webapp and reports"
+```
+
+A path argument passes if it falls within **any** of the scope entries.
+
+### Scope Rules
+
+| Rule | Example | Result |
+|------|---------|--------|
+| Paths relative to `$HOME` | `--scope "projects"` | Access `~/projects/**` |
+| Multiple entries | `--scope "a;b"` | Access `~/a/**` or `~/b/**` |
+| `.` rejected | `--scope "."` | Error (too permissive) |
+| `..` rejected | `--scope ".."` | Error (escapes `$HOME`) |
+| Absolute paths rejected | `--scope "/etc"` | Error (must be relative) |
+| Empty segments rejected | `--scope "a;;b"` | Error (malformed) |
+
+### How Path Scanning Works
+
+ClawGate applies three layers of argument security:
+
+1. **Flag validation** - Allow/deny lists for flags (`-x`, `--flag`)
+2. **Path scanning** - Non-flag arguments that look like file paths
+   are canonicalized and checked against the tool's scope
+3. **CWD confinement** - The tool subprocess runs with its working
+   directory set to `$HOME`, so relative paths resolve predictably
+
+Only syntactically unambiguous path forms are detected: `/...`,
+`~/...`, `./...`, `../...`, `.`, and `..`. Bare words like `pattern`
+or `TODO` pass through unscanned (they could be tool subcommands or
+search patterns).
+
+### Forbidden Paths
+
+Even within scope, certain sensitive directories are always blocked:
+
+- `~/.ssh/`
+- `~/.gnupg/`
+- `~/.clawgate/keys/`
+- `~/.aws/`
+
+### No Scope = No Filesystem Access
+
+Tools registered without `--scope` cannot receive path-like arguments
+at all. This is the correct setting for pure stdin/stdout tools like
+calculators, formatters, or linters that read from stdin:
+
+```bash
+# No scope needed - reads from stdin only:
+clawgate tool register calc --command "bc -l"
+
+# Path argument blocked (no scope):
+clawgate tool test calc /etc/passwd
+# Error: Path blocked
+```
+
 ---
 
 ## Troubleshooting
@@ -244,6 +352,9 @@ Stop both daemons with `Ctrl+C` in their respective terminals.
 | `Error: Tool 'X' already exists` | Tool name taken | Use a different name, or remove first |
 | `Error: Tool 'X' not found` | Tool not registered | Register it with `clawgate tool register` |
 | `Error: Blocked argument` | Flag not in allowlist (or in denylist) | Add the flag to `--allow-args` or remove from `--deny-args` |
+| `Error: Path blocked` | Path argument outside tool scope | Add `--scope` to cover the path, or widen existing scope |
+| `Error: Path blocked` (no scope) | Tool has no scope but received a path | Add `--scope` if the tool needs filesystem access |
+| `Error: Invalid scope value` | Scope contains `.`, `..`, absolute path, or empty segment | Use relative paths only: `--scope "projects/myapp"` |
 | `Error: No tokens found` | No tokens in agent's token store | Run `clawgate token add` on the agent |
 | `Error: No token grants invoke access to tool 'X'` | Token doesn't cover this tool | Grant a new token with `--tool X` |
 | `Error: Failed to connect to daemon` | Agent daemon not running | Start it with `clawgate --mode agent` |
@@ -252,6 +363,8 @@ Stop both daemons with `Ctrl+C` in their respective terminals.
 | `TOKEN_REVOKED` | Token was revoked | Grant and add a new token |
 | `TOKEN_EXPIRED` | Token TTL elapsed | Grant and add a new token |
 | `TOOL_DENIED` | No tool registry or no tools matched | Grant a token with `--tool` or `--tools-all` |
+| `ARG_BLOCKED` | Tool argument blocked by allow/deny list | Adjust `--allow-args` or `--deny-args` |
+| `PATH_BLOCKED` | Path argument outside tool scope | Widen `--scope` or remove the path argument |
 
 **Daemon startup order**: Start the agent daemon first, then the
 resource daemon. The resource daemon connects to the agent, not the
@@ -277,8 +390,8 @@ clawgate tool update calc --timeout 20
 Tool updated
 ```
 
-You can update `--command`, `--timeout`, `--max-output`, and
-`--description`. Existing tokens remain valid - the tool registry
+You can update `--command`, `--timeout`, `--max-output`, `--scope`,
+and `--description`. Existing tokens remain valid - the tool registry
 is checked at execution time, not at token creation.
 
 ### Listing and Inspecting Tools
@@ -289,7 +402,8 @@ clawgate tool ls
 ```
 
 ```
-calc   bc -l   Calculator (bc)
+calc     bc -l   Calculator (bc)
+mygrep   grep    Safe grep          [projects/webapp]
 ```
 
 ```bash
@@ -300,6 +414,7 @@ clawgate tool info calc
 Name:        calc
 Command:     bc -l
 Arg mode:    allowlist
+Scope:       (none)
 Timeout:     10s
 Max output:  65536 bytes
 Description: Calculator (bc)
@@ -327,23 +442,32 @@ clawgate tool register mygrep \
   --deny-args "--exec" \
   --deny-args "-c" \
   --arg-mode passthrough \
+  --scope "projects/webapp" \
   --description "Safe grep"
 ```
 
+The `--scope` is required because `grep` accesses the filesystem.
+Without it, any path-like argument would be blocked.
+
 ```bash
 # Works (passthrough allows everything not denied):
-echo "hello" | clawgate tool test mygrep -i -n "hello"
+clawgate tool test mygrep -rn "TODO" ~/projects/webapp/
 
-# Blocked:
-echo "hello" | clawgate tool test mygrep --exec "evil"
+# Blocked flag:
+clawgate tool test mygrep --exec "evil" ~/projects/webapp/
 # Error: Blocked argument
 
+# Blocked path (outside scope):
+clawgate tool test mygrep -rn "TODO" /etc/hosts
+# Error: Path blocked
+
 # Also blocked (--flag=value form):
-echo "hello" | clawgate tool test mygrep --exec=evil
+clawgate tool test mygrep --exec=evil ~/projects/webapp/
 # Error: Blocked argument
 ```
 
-Both modes always allow positional (non-flag) arguments.
+Both modes always allow positional (non-flag) arguments, but
+path-like arguments are still validated against the tool's scope.
 
 ### Multiple Tools in One Token
 
@@ -393,6 +517,7 @@ the response includes a `truncated` flag.
 # Register a tool with a small output limit:
 clawgate tool register small \
   --command "cat" \
+  --scope "projects/webapp" \
   --max-output 16
 
 echo "this is more than sixteen bytes" | clawgate tool test small
@@ -450,8 +575,8 @@ clawgate tool remote-list
 Expected output:
 
 ```
-calc    Calculator (bc)
-mygrep  Safe grep
+calc     Calculator (bc)
+mygrep   Safe grep          [projects/webapp]
 ```
 
 This is a discovery command - it shows all registered tools regardless
@@ -468,7 +593,7 @@ requires a properly scoped token.
 
 | Command | Purpose |
 |---------|---------|
-| `clawgate tool register <name> --command "..." [options]` | Register a new tool |
+| `clawgate tool register <name> --command "..." [--scope "..."] [options]` | Register a new tool |
 | `clawgate tool ls` | List all registered tools |
 | `clawgate tool info <name>` | Show tool details |
 | `clawgate tool update <name> [options]` | Update tool configuration |

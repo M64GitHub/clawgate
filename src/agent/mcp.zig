@@ -199,7 +199,7 @@ fn handleInitialize(allocator: Allocator, id: ?std.json.Value) ![]const u8 {
     try writer.writeAll("\"capabilities\":{\"tools\":{}},");
     try writer.writeAll("\"serverInfo\":{");
     try writer.writeAll("\"name\":\"clawgate\",");
-    try writer.writeAll("\"version\":\"0.3.2\"");
+    try writer.writeAll("\"version\":\"0.3.3\"");
     try writer.writeAll("}}}");
 
     const result = output.written();
@@ -1834,7 +1834,7 @@ test "handleInitialize returns capabilities" {
     try std.testing.expectEqualStrings("2.0", parsed.value.jsonrpc);
     const info = parsed.value.result.serverInfo;
     try std.testing.expectEqualStrings("clawgate", info.name);
-    try std.testing.expectEqualStrings("0.3.2", info.version);
+    try std.testing.expectEqualStrings("0.3.3", info.version);
 }
 
 test "handleToolsList returns all tools" {

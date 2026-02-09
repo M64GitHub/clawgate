@@ -39,6 +39,7 @@ pub const ErrorCode = struct {
     pub const TOOL_TIMEOUT = "TOOL_TIMEOUT";
     pub const TOOL_ERROR = "TOOL_ERROR";
     pub const ARG_BLOCKED = "ARG_BLOCKED";
+    pub const PATH_BLOCKED = "PATH_BLOCKED";
 };
 
 pub const HandlerError = error{
@@ -70,6 +71,7 @@ pub fn handleRequest(
         identity,
         null,
         null,
+        null,
     );
 }
 
@@ -82,6 +84,7 @@ pub fn handleRequestFull(
     identity: IdentityOptions,
     rev_list: ?*const revocation.RevocationList,
     tool_registry: ?*const tools_mod.ToolRegistry,
+    home: ?[]const u8,
 ) HandlerError![]const u8 {
     // Tokenless tool_list: return all registered tools
     // unconditionally. This is metadata-only (names +
@@ -210,6 +213,7 @@ pub fn handleRequestFull(
             req,
             &tok,
             tool_registry,
+            home,
         );
     }
 
@@ -515,6 +519,7 @@ fn handleToolRequest(
     req: protocol.Request,
     tok: *const token_mod.Token,
     registry: ?*const tools_mod.ToolRegistry,
+    home: ?[]const u8,
 ) HandlerError![]const u8 {
     const tool_name = req.params.tool_name orelse {
         return protocol.formatError(
@@ -564,21 +569,51 @@ fn handleToolRequest(
         ) catch return HandlerError.OutOfMemory;
     };
 
+    // Validate path arguments against tool scope
+    if (home) |h| {
+        tool_exec.validatePaths(
+            allocator,
+            config.*,
+            tool_args,
+            h,
+        ) catch |err| {
+            return switch (err) {
+                tool_exec.ExecError.PathBlocked => {
+                    return protocol.formatError(
+                        allocator,
+                        req.id,
+                        ErrorCode.PATH_BLOCKED,
+                        "Path outside tool scope",
+                    ) catch return HandlerError.OutOfMemory;
+                },
+                else => {
+                    return protocol.formatError(
+                        allocator,
+                        req.id,
+                        ErrorCode.INTERNAL_ERROR,
+                        "Path validation error",
+                    ) catch return HandlerError.OutOfMemory;
+                },
+            };
+        };
+    }
+
     // Decode base64 input
     const decoded_input: ?[]const u8 =
         if (req.params.input) |enc|
-        protocol.decodeBase64(allocator, enc) catch null
-    else
-        null;
+            protocol.decodeBase64(allocator, enc) catch null
+        else
+            null;
     defer if (decoded_input) |d| allocator.free(d);
 
-    // Execute
+    // Execute with CWD set to $HOME for confinement
     var result = tool_exec.executeTool(
         allocator,
         io,
         config.*,
         tool_args,
         decoded_input,
+        home,
     ) catch |err| {
         return switch (err) {
             tool_exec.ExecError.ArgBlocked => {
@@ -587,6 +622,14 @@ fn handleToolRequest(
                     req.id,
                     ErrorCode.ARG_BLOCKED,
                     "Blocked argument",
+                ) catch return HandlerError.OutOfMemory;
+            },
+            tool_exec.ExecError.PathBlocked => {
+                return protocol.formatError(
+                    allocator,
+                    req.id,
+                    ErrorCode.PATH_BLOCKED,
+                    "Path outside tool scope",
                 ) catch return HandlerError.OutOfMemory;
             },
             tool_exec.ExecError.OutputTooLong => {
@@ -799,8 +842,9 @@ const FORBIDDEN_SUFFIXES = [_][]const u8{
 };
 
 /// Checks if a path matches any forbidden pattern.
-/// Uses component-aware matching to avoid substring false positives.
-fn isForbiddenPath(path: []const u8) bool {
+/// Uses component-aware matching to avoid substring
+/// false positives.
+pub fn isForbiddenPath(path: []const u8) bool {
     // Collect components into stack buffer
     var components: [128][]const u8 = undefined;
     var count: usize = 0;
@@ -907,6 +951,10 @@ fn mapFileError(
         tool_exec.ExecError.ArgBlocked => .{
             ErrorCode.ARG_BLOCKED,
             "Blocked tool argument",
+        },
+        tool_exec.ExecError.PathBlocked => .{
+            ErrorCode.PATH_BLOCKED,
+            "Path outside tool scope",
         },
         else => .{
             ErrorCode.INTERNAL_ERROR,
@@ -1453,6 +1501,7 @@ test "handle tool_list returns authorized tools only" {
         .{},
         null,
         &reg,
+        null,
     );
     defer allocator.free(response);
 
@@ -1559,6 +1608,7 @@ test "handle tool_list with wildcard scope returns all" {
         .{},
         null,
         &reg,
+        null,
     );
     defer allocator.free(response);
 
@@ -1612,6 +1662,7 @@ test "handle tool_list with no registry returns TOOL_DENIED" {
         req_json,
         kp.public_key,
         .{},
+        null,
         null,
         null,
     );

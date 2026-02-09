@@ -4,7 +4,7 @@
 
 set -e
 
-VERSION="${CLAWGATE_VERSION:-0.3.2}"
+VERSION="${CLAWGATE_VERSION:-0.3.3}"
 INSTALL_DIR="${CLAWGATE_INSTALL_DIR:-/usr/local/bin}"
 
 # Detect OS

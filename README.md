@@ -1,6 +1,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.16+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
-[![Version](https://img.shields.io/badge/version-0.3.2-green.svg)](https://github.com/M64GitHub/clawgate/releases)
+[![Version](https://img.shields.io/badge/version-0.3.3-green.svg)](https://github.com/M64GitHub/clawgate/releases)
 [![GitHub Release](https://img.shields.io/github/v/release/M64GitHub/clawgate)](https://github.com/M64GitHub/clawgate/releases/latest)
 
 # ClawGate
@@ -164,28 +164,35 @@ Git commands run through allowlists with blocked flags (`-c`, `--exec-path`, `--
 Proxy **any command-line tool** through ClawGate's secure pipeline. Tools are registered on the resource machine - the agent can only invoke what has been explicitly registered and granted.
 
 ```bash
-# Register (on your laptop)
+# Register a pure stdin/stdout tool (no filesystem access)
 clawgate tool register calc \
   --command "bc -l" \
   --allow-args "-q" \
   --timeout 10 \
-  --max-output 65536 \
   --description "Calculator (bc)" \
   --example 'echo "2+2" | clawgate tool calc'
+
+# Register a tool that accesses files (scope required)
+clawgate tool register rg \
+  --command "rg" \
+  --scope "projects/webapp" \
+  --timeout 30 \
+  --description "Ripgrep search"
 
 # Grant and use (agent side)
 clawgate grant --tool calc --ttl 4h
 echo "2+2" | clawgate tool calc
 ```
 
-Each tool has an **argument validation mode**:
+Each tool has **three layers of argument security**:
 
-| Mode | Behavior |
-|------|----------|
-| **Allowlist** (default) | Only explicitly listed flags are permitted |
-| **Passthrough** | All flags allowed except those in the deny list |
+| Layer | Protection |
+|-------|------------|
+| **Flag validation** | Allowlist or denylist mode for command flags |
+| **Path scoping** | Path arguments validated against `--scope` |
+| **CWD confinement** | Subprocess runs with CWD set to `$HOME` |
 
-Commands are executed via direct argv - never through a shell. No shell expansion, no pipes, no semicolons. Output is truncated at the configured limit.
+Tools that access the filesystem **must** have a `--scope`. Tools without a scope (like `calc`) block all path-like arguments. Commands are executed via direct argv - never through a shell. No shell expansion, no pipes, no semicolons. Output is truncated at the configured limit.
 
 ```bash
 clawgate tool ls                     # List registered tools
@@ -304,7 +311,7 @@ The resource daemon connects to the agent daemon over TCP (`:53280`). All reques
 | Feature | Description |
 |---------|-------------|
 | **Fine-grained access** | Grant specific paths and tools, not "everything" |
-| **Custom tool proxy** | Register any CLI tool, invoke remotely with argument validation |
+| **Custom tool proxy** | Register any CLI tool with path scoping, argument validation, CWD confinement |
 | **Git operations** | Three-tier git access: read-only, write, full (push/pull) |
 | **Token revocation** | Revoke tokens before expiry, resource-side enforcement |
 | **Time-bounded tokens** | 1h, 24h, 7d - you choose |
@@ -315,7 +322,7 @@ The resource daemon connects to the agent daemon over TCP (`:53280`). All reques
 | **Large file handling** | Files >512KB automatically truncated with metadata |
 | 🦞 **OpenClaw native** | Skill file included |
 | **Fast** | Pure Zig, zero dependencies, minimal latency |
-| **Defense-in-depth security** | 14 layers - see [Security](#security) below |
+| **Defense-in-depth security** | 16 layers - see [Security](#security) below |
 
 ## Security
 
@@ -337,6 +344,8 @@ ClawGate is a security tool. We take this seriously.
 | **Path safety** | Canonicalization, traversal protection |
 | **Git allowlists** | Tiered command allowlists, blocked flags (`-c`, `--exec`) |
 | **Argument validation** | Per-tool allowlist/denylist for command flags |
+| **Tool path scoping** | Path arguments validated against per-tool scope |
+| **CWD confinement** | Tool subprocesses execute with CWD = `$HOME` |
 | **No shell execution** | Tools run via direct argv, no shell interpolation |
 | **Output limits** | Per-tool configurable output truncation |
 | **Symlink rejection** | All symlinks unconditionally rejected |
@@ -385,6 +394,7 @@ Token Revocation (primary machine):
 
 Tool Registry (primary machine):
   clawgate tool register <name>     Register a new tool
+    --scope <paths>                 Semicolon-separated scope (relative to $HOME)
   clawgate tool ls                  List registered tools
   clawgate tool info <name>         Show tool details
   clawgate tool update <name>       Update tool configuration
